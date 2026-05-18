@@ -1,9 +1,45 @@
+export type CompilerMode = 'gemma_vision' | 'ocr_assisted'
+export type StoryBeatKind = 'text' | 'illustration'
+export type CaregiverCuePurpose = 'prediction' | 'emotion' | 'vocabulary' | 'engagement'
+
+export interface StoryBeat {
+  beat_id: string
+  kind: StoryBeatKind
+  narration: string
+  source_text: string | null
+  layout_region: string | null
+  confidence: number
+}
+
+export interface CaregiverCue {
+  cue_id: string
+  after_beat_id: string
+  cue: string
+  purpose: CaregiverCuePurpose
+}
+
+export interface StoryDiagnostics {
+  mode: CompilerMode
+  layout_notes: string
+  ocr_used: boolean
+  warnings: string[]
+}
+
+export interface StoryCompilation {
+  title: string | null
+  spoken_script: string
+  beats: StoryBeat[]
+  caregiver_cues: CaregiverCue[]
+  diagnostics: StoryDiagnostics
+}
+
 export interface ReadPayload {
   request_id: string
   text: string
   audio_url: string
   mime_type: string
   expires_at: string
+  story: StoryCompilation | null
 }
 
 interface ReadJobAcceptedPayload {
@@ -14,7 +50,7 @@ interface ReadJobAcceptedPayload {
 export interface ReadJobProgressPayload {
   request_id: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
-  stage: 'queued' | 'ocr' | 'tts' | 'completed' | 'failed'
+  stage: 'queued' | 'story_compile' | 'ocr' | 'tts' | 'completed' | 'failed'
   text: string | null
   audio_url: string | null
   mime_type: string | null
@@ -22,6 +58,7 @@ export interface ReadJobProgressPayload {
   paragraphs_total: number
   paragraphs_completed: number
   error: string | null
+  story: StoryCompilation | null
 }
 
 const JOB_POLL_INTERVAL_MS = 1500
@@ -29,11 +66,13 @@ const JOB_POLL_INTERVAL_MS = 1500
 export async function submitReadRequest(
   blob: Blob,
   langHint = 'bilingual',
+  compilerMode: CompilerMode = 'gemma_vision',
   onProgress?: (progress: ReadJobProgressPayload) => void,
 ): Promise<ReadPayload> {
   const formData = new FormData()
   formData.append('image', blob, 'page.jpg')
   formData.append('lang_hint', langHint)
+  formData.append('compiler_mode', compilerMode)
 
   const response = await fetch('/api/read/jobs', {
     method: 'POST',
@@ -71,6 +110,7 @@ async function waitForReadJob(
         audio_url: payload.audio_url,
         mime_type: payload.mime_type,
         expires_at: payload.expires_at,
+        story: payload.story,
       }
     }
 

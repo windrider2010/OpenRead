@@ -30,7 +30,7 @@ def _bool_env(name: str, default: bool) -> bool:
 
 @dataclass(slots=True)
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "Book Voice API")
+    app_name: str = os.getenv("APP_NAME", "OpenRead API")
     app_env: str = os.getenv("APP_ENV", "development")
     allow_origins: tuple[str, ...] = _csv_env("ALLOW_ORIGINS", "*")
     max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
@@ -53,6 +53,10 @@ class Settings:
     paddle_enable_hpi: bool = _bool_env("PADDLE_ENABLE_HPI", False)
     paddle_cpu_threads: int = max(1, int(os.getenv("PADDLE_CPU_THREADS", "4")))
     espeak_ng_path: str | None = os.getenv("ESPEAK_NG_PATH") or None
+    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
+    gemma_model: str = os.getenv("GEMMA_MODEL", "gemma-4-31b-it")
+    story_compiler_mode: str = os.getenv("STORY_COMPILER_MODE", "gemma_vision")
+    story_compiler_timeout_seconds: int = max(1, int(os.getenv("STORY_COMPILER_TIMEOUT_SECONDS", "90")))
     backend_dir: Path = BACKEND_DIR
     repo_dir: Path = REPO_DIR
     web_dist_dir: Path = WEB_DIST_DIR

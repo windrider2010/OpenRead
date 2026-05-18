@@ -1,7 +1,7 @@
 [project]
-name = "book-voice-backend"
+name = "openread-backend"
 version = "0.1.0"
-description = "FastAPI backend for book page OCR + TTS."
+description = "FastAPI backend for OpenRead picture-book story compilation and TTS."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.35.0,<1.0.0",
     "python-multipart>=0.0.20,<1.0.0",
     "python-dotenv>=1.0.1,<2.0.0",
+    "google-genai>=1.50.0,<2.0.0",
     "pillow>=11.0.0,<12.0.0",
     "numpy>=2.1.0,<3.0.0",
     "paddleocr>=3.1.0,<4.0.0",

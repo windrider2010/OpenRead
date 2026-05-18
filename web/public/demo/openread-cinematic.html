@@ -1,0 +1,1389 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23fff2bd'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-size='34' font-family='Arial Rounded MT Bold, Arial, sans-serif' font-weight='900' fill='%235f438f'%3EO%3C/text%3E%3C/svg%3E"
+    />
+    <title>OpenRead Cinematic Demo</title>
+    <style>
+      :root {
+        --film: 30s;
+        --ink: #21152f;
+        --paper: #fff6e6;
+        --plum: #4f3979;
+        --violet: #7a5fc2;
+        --gold: #f4bb58;
+        --mint: #a8d6b8;
+        --rose: #efb0b8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        min-height: 100%;
+        margin: 0;
+        background: #150f22;
+        color: var(--paper);
+        font-family:
+          Avenir Next,
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        overflow: hidden;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      .film {
+        width: min(100vw, calc(100vh * 16 / 9));
+        aspect-ratio: 16 / 9;
+        position: relative;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 14% 16%, rgba(244, 187, 88, 0.26), transparent 30%),
+          linear-gradient(135deg, #27193c 0%, #50386f 48%, #f0caa6 100%);
+        box-shadow: 0 24px 90px rgba(0, 0, 0, 0.46);
+        isolation: isolate;
+      }
+
+      .film::before,
+      .film::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 30;
+      }
+
+      .film::before {
+        background:
+          linear-gradient(90deg, rgba(10, 7, 18, 0.5), transparent 18%, transparent 82%, rgba(10, 7, 18, 0.5)),
+          linear-gradient(180deg, rgba(10, 7, 18, 0.72), transparent 22%, transparent 78%, rgba(10, 7, 18, 0.74));
+      }
+
+      .film::after {
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+        background-size: 4px 4px;
+        mix-blend-mode: overlay;
+        opacity: 0.5;
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        animation-duration: var(--film);
+        animation-timing-function: linear;
+        animation-iteration-count: infinite;
+        animation-fill-mode: both;
+        transform: translateZ(0);
+        will-change: opacity, transform;
+      }
+
+      .scene-one {
+        animation-name: scene-one, camera-one;
+      }
+
+      .scene-two {
+        animation-name: scene-two, camera-two;
+      }
+
+      .scene-three {
+        animation-name: scene-three, camera-three;
+      }
+
+      .scene-four {
+        animation-name: scene-four, camera-four;
+      }
+
+      .scene-five {
+        animation-name: scene-five, camera-five;
+      }
+
+      .scene-six {
+        animation-name: scene-six, camera-six;
+      }
+
+      .brand {
+        position: absolute;
+        left: 5.5%;
+        top: 7%;
+        z-index: 20;
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .logo {
+        margin: 0;
+        color: #fff0a9;
+        font-family:
+          "Cooper Black",
+          "Comic Sans MS",
+          "Trebuchet MS",
+          ui-rounded,
+          system-ui,
+          sans-serif;
+        font-size: clamp(2rem, 4.8vw, 4.4rem);
+        line-height: 0.9;
+        letter-spacing: 0;
+        text-shadow:
+          0 4px 0 rgba(76, 46, 100, 0.8),
+          0 16px 30px rgba(20, 12, 34, 0.34);
+      }
+
+      .tagline {
+        margin: 0;
+        max-width: 31rem;
+        padding: 0.95rem 1.15rem;
+        border: 1px solid rgba(255, 250, 236, 0.26);
+        border-radius: 1.15rem;
+        color: rgba(255, 250, 236, 0.96);
+        background: rgba(28, 18, 43, 0.34);
+        backdrop-filter: blur(12px);
+        font-size: clamp(1.05rem, 1.8vw, 1.55rem);
+        font-weight: 800;
+        line-height: 1.35;
+        box-shadow: 0 1rem 2.6rem rgba(20, 12, 34, 0.2);
+      }
+
+      .caption {
+        position: absolute;
+        z-index: 15;
+        display: grid;
+        gap: 0.75rem;
+        max-width: min(42vw, 35rem);
+      }
+
+      .caption h2 {
+        margin: 0;
+        color: #fff8dc;
+        font-size: clamp(2rem, 4.5vw, 5.2rem);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .caption p {
+        margin: 0;
+        color: rgba(255, 249, 230, 0.92);
+        font-size: clamp(1rem, 1.75vw, 1.45rem);
+        font-weight: 650;
+        line-height: 1.38;
+      }
+
+      .soft-scene {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 80% 18%, rgba(255, 236, 158, 0.62) 0 7%, transparent 12%),
+          linear-gradient(180deg, #34224f 0%, #896ba8 46%, #f3caa5 100%);
+      }
+
+      .window {
+        position: absolute;
+        right: 9%;
+        top: 17%;
+        width: 35%;
+        aspect-ratio: 1.05;
+        border-radius: 48% 48% 14% 14%;
+        background:
+          linear-gradient(180deg, rgba(255, 246, 210, 0.42), rgba(255, 246, 210, 0.05)),
+          linear-gradient(180deg, #5e4d91, #dfb9c3);
+        border: 0.35rem solid rgba(255, 248, 220, 0.55);
+        box-shadow:
+          inset 0 -2rem 4rem rgba(68, 42, 95, 0.2),
+          0 2rem 6rem rgba(21, 12, 35, 0.34);
+      }
+
+      .window::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 0.18rem;
+        background: rgba(255, 248, 220, 0.48);
+      }
+
+      .room-floor {
+        position: absolute;
+        inset: auto 0 0;
+        height: 28%;
+        background: linear-gradient(180deg, rgba(239, 176, 184, 0.25), rgba(78, 47, 92, 0.92));
+      }
+
+      .parent,
+      .child {
+        position: absolute;
+        bottom: 18%;
+        border-radius: 999px 999px 18% 18%;
+        background: linear-gradient(180deg, #fff3cd, #cf8f99);
+        box-shadow: 0 1.1rem 2.6rem rgba(21, 12, 35, 0.26);
+      }
+
+      .parent {
+        left: 23%;
+        width: 6.8%;
+        height: 24%;
+      }
+
+      .child {
+        left: 31%;
+        width: 5.2%;
+        height: 17%;
+        background: linear-gradient(180deg, #e9fff1, #82bda0);
+      }
+
+      .book-glow {
+        position: absolute;
+        left: 24.5%;
+        bottom: 18%;
+        width: 15%;
+        height: 8%;
+        border-radius: 1.1rem;
+        background: #fff6d6;
+        transform: perspective(30rem) rotateX(55deg) rotateZ(-3deg);
+        box-shadow: 0 0 5rem rgba(255, 236, 158, 0.72);
+        animation: book-pulse var(--film) linear infinite;
+      }
+
+      .scene-one .caption {
+        left: 6%;
+        bottom: 12%;
+      }
+
+      .scene-one .caption h2 {
+        max-width: 15ch;
+        font-size: clamp(1.35rem, 2.75vw, 3.25rem);
+      }
+
+      .scene-one .parent {
+        left: 52%;
+        width: 6.2%;
+      }
+
+      .scene-one .child {
+        left: 60%;
+        width: 4.8%;
+      }
+
+      .scene-one .book-glow {
+        left: 51.8%;
+        width: 15.5%;
+      }
+
+      .phone {
+        position: absolute;
+        width: 24%;
+        aspect-ratio: 9 / 18;
+        border-radius: 2.1rem;
+        background: #20172b;
+        padding: 0.72rem;
+        box-shadow:
+          0 2.5rem 7rem rgba(0, 0, 0, 0.45),
+          inset 0 0 0 0.1rem rgba(255, 255, 255, 0.12);
+      }
+
+      .phone::before {
+        content: "";
+        position: absolute;
+        left: 37%;
+        right: 37%;
+        top: 0.55rem;
+        height: 0.34rem;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+      }
+
+      .phone-screen {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        border-radius: 1.55rem;
+        background:
+          linear-gradient(180deg, rgba(255, 250, 241, 0.82), rgba(246, 229, 252, 0.92)),
+          #fff7ec;
+      }
+
+      .phone-ui-brand {
+        position: absolute;
+        left: 7%;
+        top: 5.5%;
+        color: #654494;
+        font-family: "Cooper Black", "Comic Sans MS", ui-rounded, sans-serif;
+        font-size: 1.2rem;
+        font-weight: 900;
+      }
+
+      .phone-window {
+        position: absolute;
+        left: 7%;
+        right: 7%;
+        top: 16%;
+        height: 46%;
+        border: 0.15rem solid rgba(88, 61, 118, 0.36);
+        border-radius: 1.4rem;
+        overflow: hidden;
+        background:
+          linear-gradient(135deg, rgba(255, 245, 205, 0.92), rgba(231, 188, 188, 0.88) 55%, rgba(167, 212, 183, 0.8));
+      }
+
+      .phone-button {
+        position: absolute;
+        left: 7%;
+        right: 7%;
+        top: 66%;
+        height: 13%;
+        border-radius: 1.25rem;
+        display: grid;
+        place-items: center;
+        color: #241835;
+        background: linear-gradient(135deg, #fff1a3, #f4aa57 52%, #9fcfb9);
+        font-size: 1rem;
+        font-weight: 900;
+        overflow: hidden;
+      }
+
+      .phone-button::after {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 -45%;
+        width: 44%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+        transform: skewX(-18deg);
+        animation: button-shine var(--film) linear infinite;
+      }
+
+      .phone-card {
+        position: absolute;
+        left: 7%;
+        right: 7%;
+        bottom: 5%;
+        min-height: 12%;
+        border-radius: 1rem;
+        background: rgba(255, 252, 244, 0.94);
+        color: #30243f;
+        padding: 0.7rem;
+        font-size: 0.74rem;
+        font-weight: 800;
+        line-height: 1.32;
+      }
+
+      .page-photo {
+        position: absolute;
+        inset: 8%;
+        border-radius: 1.1rem;
+        background:
+          linear-gradient(90deg, transparent 48.5%, rgba(101, 68, 111, 0.28) 49%, rgba(101, 68, 111, 0.28) 51%, transparent 51.5%),
+          linear-gradient(180deg, #fffaf2, #ffe6cf);
+        box-shadow: 0 1rem 2rem rgba(68, 43, 88, 0.24);
+      }
+
+      .page-photo::before,
+      .page-photo::after {
+        content: "";
+        position: absolute;
+        border-radius: 999px;
+      }
+
+      .page-photo::before {
+        right: 11%;
+        top: 15%;
+        width: 30%;
+        aspect-ratio: 1;
+        background: #ffe77f;
+        box-shadow: 0 0 2.8rem rgba(255, 222, 92, 0.62);
+      }
+
+      .page-photo::after {
+        left: 12%;
+        bottom: 18%;
+        width: 42%;
+        height: 11%;
+        background:
+          linear-gradient(#8c659a 0 0) 0 0 / 100% 0.12rem no-repeat,
+          linear-gradient(#8c659a 0 0) 0 50% / 88% 0.12rem no-repeat,
+          linear-gradient(#8c659a 0 0) 0 100% / 72% 0.12rem no-repeat;
+      }
+
+      .scene-two {
+        background:
+          radial-gradient(circle at 72% 22%, rgba(255, 245, 175, 0.5), transparent 16%),
+          linear-gradient(140deg, #563e7f, #efb0b8 55%, #f6d9b0);
+      }
+
+      .scene-two .phone {
+        right: 14%;
+        top: 9%;
+        animation: phone-rise var(--film) linear infinite;
+      }
+
+      .scene-two .caption {
+        left: 7%;
+        bottom: 16%;
+      }
+
+      .hand {
+        position: absolute;
+        right: 8%;
+        bottom: -8%;
+        width: 33%;
+        height: 30%;
+        border-radius: 45% 45% 0 0;
+        background: linear-gradient(180deg, #f2c2a5, #c68178);
+        transform: rotate(-8deg);
+        box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.24);
+      }
+
+      .spark {
+        position: absolute;
+        width: 1.6%;
+        aspect-ratio: 1;
+        background: #fff2a8;
+        clip-path: polygon(50% 0, 61% 38%, 100% 50%, 61% 62%, 50% 100%, 39% 62%, 0 50%, 39% 38%);
+        filter: drop-shadow(0 0 0.8rem rgba(255, 234, 137, 0.82));
+      }
+
+      .spark-a {
+        left: 64%;
+        top: 19%;
+        animation: sparkle-a var(--film) linear infinite;
+      }
+
+      .spark-b {
+        left: 84%;
+        top: 48%;
+        width: 1.2%;
+        background: #bfe8c9;
+        animation: sparkle-b var(--film) linear infinite;
+      }
+
+      .scene-three {
+        background:
+          radial-gradient(circle at 50% 50%, rgba(255, 244, 202, 0.3), transparent 30%),
+          linear-gradient(135deg, #211630, #5a4386 54%, #f0c8a8);
+      }
+
+      .scene-three .caption {
+        right: 6%;
+        top: 14%;
+      }
+
+      .analysis-page {
+        position: absolute;
+        left: 8%;
+        top: 12%;
+        width: 40%;
+        aspect-ratio: 1.38;
+        border-radius: 2rem;
+        background:
+          linear-gradient(90deg, transparent 49%, rgba(91, 58, 111, 0.22) 50%, transparent 51%),
+          linear-gradient(180deg, #fffaf2, #ffe5ca);
+        box-shadow: 0 2rem 6rem rgba(0, 0, 0, 0.3);
+        transform: rotate(-2deg);
+      }
+
+      .analysis-page .picture {
+        position: absolute;
+        right: 8%;
+        top: 12%;
+        width: 34%;
+        aspect-ratio: 1.1;
+        border-radius: 1rem;
+        background:
+          radial-gradient(circle at 70% 28%, #ffe983 0 18%, transparent 19%),
+          linear-gradient(150deg, #abd9bb, #efd5d7);
+      }
+
+      .text-line {
+        position: absolute;
+        left: 9%;
+        height: 0.42rem;
+        border-radius: 999px;
+        background: #856099;
+        opacity: 0.72;
+      }
+
+      .line-one {
+        top: 22%;
+        width: 34%;
+      }
+
+      .line-two {
+        top: 30%;
+        width: 28%;
+      }
+
+      .line-three {
+        top: 66%;
+        width: 48%;
+      }
+
+      .line-four {
+        top: 74%;
+        width: 37%;
+      }
+
+      .highlight {
+        position: absolute;
+        border: 0.22rem solid #f4bb58;
+        border-radius: 1rem;
+        box-shadow: 0 0 1.4rem rgba(244, 187, 88, 0.54);
+        animation: scan-highlight var(--film) linear infinite;
+      }
+
+      .highlight.words {
+        left: 6.4%;
+        top: 18%;
+        width: 40%;
+        height: 18%;
+      }
+
+      .highlight.picture-box {
+        right: 6.5%;
+        top: 10%;
+        width: 39%;
+        height: 43%;
+        border-color: #a8d6b8;
+        box-shadow: 0 0 1.4rem rgba(168, 214, 184, 0.58);
+      }
+
+      .scene-four {
+        background:
+          radial-gradient(circle at 50% 40%, rgba(255, 248, 220, 0.2), transparent 28%),
+          linear-gradient(160deg, #2b1a40, #755799 50%, #ddb3c4);
+      }
+
+      .scene-four .caption {
+        left: 6%;
+        top: 15%;
+      }
+
+      .reading-map {
+        position: absolute;
+        right: 7%;
+        top: 13%;
+        width: 42%;
+        aspect-ratio: 1.16;
+        border-radius: 2rem;
+        background: rgba(255, 250, 241, 0.88);
+        box-shadow: 0 2rem 6rem rgba(0, 0, 0, 0.28);
+        overflow: hidden;
+      }
+
+      .map-card {
+        position: absolute;
+        border-radius: 1rem;
+        background: #fff2d7;
+        color: #352347;
+        padding: 1rem;
+        font-weight: 900;
+        box-shadow: 0 0.8rem 1.6rem rgba(57, 38, 80, 0.16);
+      }
+
+      .card-one {
+        left: 9%;
+        top: 12%;
+        width: 38%;
+        height: 21%;
+      }
+
+      .card-two {
+        right: 9%;
+        top: 30%;
+        width: 36%;
+        height: 28%;
+        background: #e5f4df;
+      }
+
+      .card-three {
+        left: 17%;
+        bottom: 13%;
+        width: 52%;
+        height: 19%;
+      }
+
+      .path {
+        position: absolute;
+        inset: 0;
+      }
+
+      .path svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      .path path {
+        fill: none;
+        stroke: #7a5fc2;
+        stroke-width: 8;
+        stroke-linecap: round;
+        stroke-dasharray: 420;
+        stroke-dashoffset: 420;
+        animation: draw-path var(--film) linear infinite;
+      }
+
+      .scene-five {
+        background:
+          radial-gradient(circle at 78% 38%, rgba(255, 236, 158, 0.38), transparent 22%),
+          linear-gradient(135deg, #20172f, #59417d 48%, #a6ceb4);
+      }
+
+      .scene-five .phone {
+        left: 9%;
+        top: 8%;
+      }
+
+      .scene-five .phone-window {
+        height: 34%;
+      }
+
+      .scene-five .phone-button {
+        top: 53%;
+      }
+
+      .scene-five .phone-card {
+        min-height: 26%;
+        bottom: 7%;
+        font-size: 0.68rem;
+      }
+
+      .sound-waves {
+        position: absolute;
+        left: 34%;
+        top: 35%;
+        width: 18%;
+        height: 24%;
+      }
+
+      .wave {
+        position: absolute;
+        left: 0;
+        top: 50%;
+        height: 0.65rem;
+        border-radius: 999px;
+        background: #fff2a8;
+        transform-origin: left center;
+        animation: wave-pulse var(--film) linear infinite;
+      }
+
+      .wave:nth-child(1) {
+        width: 36%;
+        margin-top: -2.6rem;
+      }
+
+      .wave:nth-child(2) {
+        width: 62%;
+        margin-top: -0.3rem;
+        animation-delay: -0.18s;
+      }
+
+      .wave:nth-child(3) {
+        width: 82%;
+        margin-top: 2rem;
+        animation-delay: -0.34s;
+      }
+
+      .scene-five .caption {
+        right: 6%;
+        top: 18%;
+      }
+
+      .cue {
+        position: absolute;
+        right: 8%;
+        bottom: 14%;
+        width: 31%;
+        border-radius: 1.35rem;
+        padding: 1.2rem 1.35rem;
+        color: #1f1830;
+        background: #fff7d8;
+        box-shadow: 0 1.2rem 3rem rgba(0, 0, 0, 0.24);
+        font-size: clamp(1rem, 1.6vw, 1.35rem);
+        font-weight: 850;
+        line-height: 1.36;
+      }
+
+      .cue span {
+        display: block;
+        margin-bottom: 0.35rem;
+        color: #684b92;
+        font-size: 0.8em;
+        text-transform: uppercase;
+      }
+
+      .scene-six {
+        background:
+          radial-gradient(circle at 50% 36%, rgba(255, 246, 192, 0.46), transparent 24%),
+          linear-gradient(180deg, #31204e, #815e9d 54%, #f0caa6);
+      }
+
+      .scene-six .caption {
+        left: 8%;
+        bottom: 14%;
+        max-width: 38vw;
+      }
+
+      .scene-six .phone {
+        right: 13%;
+        top: 8%;
+        transform: rotate(3deg);
+      }
+
+      .final-book {
+        position: absolute;
+        left: 31%;
+        bottom: 12%;
+        width: 36%;
+        height: 12%;
+        background: #fff6d6;
+        border-radius: 1rem;
+        transform: perspective(42rem) rotateX(62deg);
+        box-shadow: 0 0 6rem rgba(255, 232, 142, 0.58);
+      }
+
+      .timeline {
+        position: absolute;
+        left: 6%;
+        right: 6%;
+        bottom: 5%;
+        z-index: 40;
+        height: 0.46rem;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.16);
+        box-shadow: 0 0 1rem rgba(255, 242, 168, 0.22);
+      }
+
+      .timeline::before {
+        content: "";
+        display: block;
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(90deg, #fff2a8, #a8d6b8);
+        transform-origin: left center;
+        animation: timeline var(--film) linear infinite;
+      }
+
+      .timeline::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        width: 1.05rem;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: #fff8d6;
+        box-shadow: 0 0 1.3rem rgba(255, 242, 168, 0.92);
+        transform: translate(-50%, -50%);
+        animation: timeline-dot var(--film) linear infinite;
+      }
+
+      .replay-button {
+        position: absolute;
+        right: 6%;
+        bottom: 7%;
+        z-index: 40;
+        min-width: 6.4rem;
+        min-height: 2.35rem;
+        border: 1px solid rgba(255, 250, 236, 0.36);
+        border-radius: 999px;
+        color: rgba(255, 250, 236, 0.9);
+        background: rgba(25, 16, 38, 0.42);
+        backdrop-filter: blur(10px);
+        font: inherit;
+        font-size: 0.78rem;
+        font-weight: 900;
+        letter-spacing: 0.08rem;
+        text-transform: uppercase;
+        cursor: pointer;
+        box-shadow: 0 0.9rem 2rem rgba(0, 0, 0, 0.18);
+      }
+
+      .replay-button:hover,
+      .replay-button:focus-visible {
+        color: #21152f;
+        background: #fff2a8;
+        outline: none;
+      }
+
+      .replay-button:active {
+        transform: translateY(1px);
+      }
+
+      @keyframes scene-one {
+        0%,
+        15% {
+          opacity: 1;
+        }
+        17%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes camera-one {
+        0% {
+          transform: scale(1.02) translate3d(0, 0, 0);
+        }
+        15% {
+          transform: scale(1.08) translate3d(-1.5%, -1.2%, 0);
+        }
+        100% {
+          transform: scale(1.08) translate3d(-1.5%, -1.2%, 0);
+        }
+      }
+
+      @keyframes scene-two {
+        0%,
+        14% {
+          opacity: 0;
+        }
+        16%,
+        31% {
+          opacity: 1;
+        }
+        33%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes camera-two {
+        0%,
+        14% {
+          transform: scale(1.04) translate3d(1.2%, 1.2%, 0);
+        }
+        31% {
+          transform: scale(1.1) translate3d(-1.2%, -1%, 0);
+        }
+        100% {
+          transform: scale(1.1) translate3d(-1.2%, -1%, 0);
+        }
+      }
+
+      @keyframes scene-three {
+        0%,
+        30% {
+          opacity: 0;
+        }
+        32%,
+        47% {
+          opacity: 1;
+        }
+        49%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes camera-three {
+        0%,
+        30% {
+          transform: scale(1.03) translate3d(-1%, 0.8%, 0);
+        }
+        47% {
+          transform: scale(1.1) translate3d(1.5%, -1.1%, 0);
+        }
+        100% {
+          transform: scale(1.1) translate3d(1.5%, -1.1%, 0);
+        }
+      }
+
+      @keyframes scene-four {
+        0%,
+        46% {
+          opacity: 0;
+        }
+        48%,
+        63% {
+          opacity: 1;
+        }
+        65%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes camera-four {
+        0%,
+        46% {
+          transform: scale(1.02) translate3d(1.1%, -0.8%, 0);
+        }
+        63% {
+          transform: scale(1.09) translate3d(-1.5%, 1%, 0);
+        }
+        100% {
+          transform: scale(1.09) translate3d(-1.5%, 1%, 0);
+        }
+      }
+
+      @keyframes scene-five {
+        0%,
+        62% {
+          opacity: 0;
+        }
+        64%,
+        80% {
+          opacity: 1;
+        }
+        82%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes camera-five {
+        0%,
+        62% {
+          transform: scale(1.04) translate3d(-1%, -1%, 0);
+        }
+        80% {
+          transform: scale(1.1) translate3d(1.4%, 1%, 0);
+        }
+        100% {
+          transform: scale(1.1) translate3d(1.4%, 1%, 0);
+        }
+      }
+
+      @keyframes scene-six {
+        0%,
+        79% {
+          opacity: 0;
+        }
+        82%,
+        100% {
+          opacity: 1;
+        }
+      }
+
+      @keyframes camera-six {
+        0%,
+        79% {
+          transform: scale(1.02) translate3d(0, 0, 0);
+        }
+        100% {
+          transform: scale(1.08) translate3d(-1.2%, -1.1%, 0);
+        }
+      }
+
+      @keyframes book-pulse {
+        0%,
+        15% {
+          opacity: 0.72;
+          box-shadow: 0 0 4rem rgba(255, 236, 158, 0.5);
+        }
+        7% {
+          opacity: 1;
+          box-shadow: 0 0 7rem rgba(255, 236, 158, 0.9);
+        }
+        100% {
+          opacity: 0.72;
+        }
+      }
+
+      @keyframes phone-rise {
+        0%,
+        15% {
+          transform: translateY(6%) rotate(-4deg);
+        }
+        19%,
+        31% {
+          transform: translateY(0) rotate(-2deg);
+        }
+        100% {
+          transform: translateY(0) rotate(-2deg);
+        }
+      }
+
+      @keyframes sparkle-a {
+        0%,
+        18% {
+          opacity: 0;
+          transform: scale(0.4) rotate(0deg);
+        }
+        22%,
+        31% {
+          opacity: 1;
+          transform: scale(1.2) rotate(90deg);
+        }
+        34%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes sparkle-b {
+        0%,
+        20% {
+          opacity: 0;
+          transform: scale(0.5) rotate(0deg);
+        }
+        24%,
+        32% {
+          opacity: 1;
+          transform: scale(1.05) rotate(120deg);
+        }
+        36%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes scan-highlight {
+        0%,
+        32% {
+          opacity: 0;
+          transform: scale(0.96);
+        }
+        35%,
+        45% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        48%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes draw-path {
+        0%,
+        49% {
+          stroke-dashoffset: 420;
+        }
+        57%,
+        63% {
+          stroke-dashoffset: 0;
+        }
+        68%,
+        100% {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      @keyframes wave-pulse {
+        0%,
+        64% {
+          opacity: 0;
+          transform: scaleX(0.2);
+        }
+        66%,
+        80% {
+          opacity: 1;
+          transform: scaleX(1);
+        }
+        82%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes button-shine {
+        0%,
+        17% {
+          transform: translateX(0) skewX(-18deg);
+        }
+        22% {
+          transform: translateX(350%) skewX(-18deg);
+        }
+        52% {
+          transform: translateX(350%) skewX(-18deg);
+        }
+        58% {
+          transform: translateX(0) skewX(-18deg);
+        }
+        68% {
+          transform: translateX(350%) skewX(-18deg);
+        }
+        100% {
+          transform: translateX(350%) skewX(-18deg);
+        }
+      }
+
+      @keyframes timeline {
+        from {
+          transform: scaleX(0);
+        }
+        to {
+          transform: scaleX(1);
+        }
+      }
+
+      @keyframes timeline-dot {
+        from {
+          left: 0;
+        }
+        to {
+          left: 100%;
+        }
+      }
+
+      @media (max-aspect-ratio: 4 / 5) {
+        .film {
+          width: 100vw;
+          height: 100svh;
+          aspect-ratio: auto;
+        }
+
+        .caption {
+          max-width: 82vw;
+        }
+
+        .caption h2 {
+          font-size: clamp(2rem, 10vw, 4.4rem);
+        }
+
+        .caption p {
+          font-size: clamp(1rem, 4vw, 1.25rem);
+        }
+
+        .scene-one .caption,
+        .scene-two .caption,
+        .scene-four .caption,
+        .scene-six .caption {
+          left: 7%;
+          right: 7%;
+          top: auto;
+          bottom: 12%;
+          max-width: 86vw;
+        }
+
+        .scene-three .caption,
+        .scene-five .caption {
+          left: 7%;
+          right: 7%;
+          top: 9%;
+          max-width: 86vw;
+        }
+
+        .window {
+          right: 9%;
+          top: 17%;
+          width: 52%;
+        }
+
+        .parent {
+          left: 45%;
+          width: 12%;
+        }
+
+        .child {
+          left: 58%;
+          width: 9%;
+        }
+
+        .book-glow {
+          left: 43%;
+          width: 27%;
+        }
+
+        .phone {
+          width: 46%;
+        }
+
+        .scene-two .phone {
+          right: 10%;
+          top: 15%;
+        }
+
+        .analysis-page,
+        .reading-map {
+          left: 8%;
+          right: 8%;
+          width: auto;
+          top: 27%;
+        }
+
+        .reading-map {
+          top: 29%;
+        }
+
+        .scene-five .phone {
+          left: 8%;
+          top: 30%;
+        }
+
+        .sound-waves {
+          left: 58%;
+          top: 48%;
+          width: 28%;
+        }
+
+        .cue {
+          right: 7%;
+          left: 7%;
+          bottom: 12%;
+          width: auto;
+        }
+
+        .scene-six .phone {
+          right: 8%;
+          top: 21%;
+        }
+
+        .final-book {
+          display: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .film::after {
+          opacity: 0.24;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="film" aria-label="OpenRead cinematic demo">
+      <section class="scene scene-one">
+        <div class="soft-scene"></div>
+        <div class="window"></div>
+        <div class="room-floor"></div>
+        <div class="parent"></div>
+        <div class="child"></div>
+        <div class="book-glow"></div>
+        <div class="brand">
+          <h1 class="logo">OPENREAD</h1>
+          <p class="tagline">
+            OpenRead is built for the fragile moment when a child is ready to hear a story, but voice, vision,
+            language, or confidence gets in the way.
+          </p>
+        </div>
+        <div class="caption">
+          <h2>Language moments are not equally easy for every family.</h2>
+          <p>Take a picture of a children's book page. OpenRead turns it into a gentle read-aloud.</p>
+        </div>
+      </section>
+
+      <section class="scene scene-two">
+        <div class="hand"></div>
+        <div class="spark spark-a"></div>
+        <div class="spark spark-b"></div>
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="phone-ui-brand">OPENREAD</div>
+            <div class="phone-window">
+              <div class="page-photo"></div>
+            </div>
+            <div class="phone-button">Take Photo</div>
+            <div class="phone-card">Ready for a story page.</div>
+          </div>
+        </div>
+        <div class="caption">
+          <h2>Just take a photo.</h2>
+          <p>No menus. No setup. The page fills the frame, then OpenRead starts reading.</p>
+        </div>
+      </section>
+
+      <section class="scene scene-three">
+        <div class="analysis-page">
+          <div class="picture"></div>
+          <span class="text-line line-one"></span>
+          <span class="text-line line-two"></span>
+          <span class="text-line line-three"></span>
+          <span class="text-line line-four"></span>
+          <span class="highlight words"></span>
+          <span class="highlight picture-box"></span>
+        </div>
+        <div class="caption">
+          <h2>It reads words and pictures.</h2>
+          <p>Picture books are not simple columns. OpenRead looks at the whole page before it speaks.</p>
+        </div>
+      </section>
+
+      <section class="scene scene-four">
+        <div class="reading-map">
+          <div class="map-card card-one">Words at the top</div>
+          <div class="map-card card-two">Picture that matters</div>
+          <div class="map-card card-three">Words at the bottom</div>
+          <div class="path" aria-hidden="true">
+            <svg viewBox="0 0 500 430" role="img">
+              <path d="M120 92 C260 70 335 115 350 178 C370 260 212 238 180 330 C158 395 310 378 376 342" />
+            </svg>
+          </div>
+        </div>
+        <div class="caption">
+          <h2>It finds what comes first.</h2>
+          <p>If the page jumps around, OpenRead puts the story back into a natural order.</p>
+        </div>
+      </section>
+
+      <section class="scene scene-five">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="phone-ui-brand">OPENREAD</div>
+            <div class="phone-window">
+              <div class="page-photo"></div>
+            </div>
+            <div class="phone-button">Play Audio</div>
+            <div class="phone-card">
+              The little moon rose over the hill. The child looked up and smiled.
+            </div>
+          </div>
+        </div>
+        <div class="sound-waves" aria-hidden="true">
+          <span class="wave"></span>
+          <span class="wave"></span>
+          <span class="wave"></span>
+        </div>
+        <div class="caption">
+          <h2>Then it reads aloud.</h2>
+          <p>The spoken story stays child-facing. Helpful grown-up prompts stay on screen.</p>
+        </div>
+        <div class="cue">
+          <span>Question to ask</span>
+          What do you think the child sees in the sky?
+        </div>
+      </section>
+
+      <section class="scene scene-six">
+        <div class="final-book"></div>
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="phone-ui-brand">OPENREAD</div>
+            <div class="phone-window">
+              <div class="page-photo"></div>
+            </div>
+            <div class="phone-button">Take Photo</div>
+            <div class="phone-card">Reading order, voice, and questions in one calm place.</div>
+          </div>
+        </div>
+        <div class="caption">
+          <h2>Made for real reading moments.</h2>
+          <p>For bedtime, busy hands, tired eyes, and pages where the pictures carry part of the story.</p>
+        </div>
+      </section>
+
+      <div class="timeline" aria-hidden="true"></div>
+      <button class="replay-button" type="button" aria-label="Replay demo">Replay</button>
+    </main>
+    <script>
+      const replayButton = document.querySelector(".replay-button");
+
+      replayButton?.addEventListener("click", () => {
+        document.getAnimations({ subtree: true }).forEach((animation) => {
+          animation.cancel();
+          animation.play();
+        });
+        replayButton.blur();
+      });
+    </script>
+  </body>
+</html>

@@ -15,16 +15,25 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.config import get_settings
 from app.models import (
+    CompilerMode,
     HealthResponse,
     OcrBlock,
     OcrResponse,
     ReadJobAcceptedResponse,
     ReadJobStatusResponse,
     ReadResponse,
+    StoryCompilation,
 )
 from app.services.image_pipeline import ImageValidationError, normalize_uploaded_image
 from app.services.media_store import MediaStore
 from app.services.ocr_service import OcrService, PaddleOcrService
+from app.services.story_compiler import (
+    GemmaStoryCompilerService,
+    StoryCompilerError,
+    StoryCompilerService,
+    normalize_compiler_mode,
+    story_from_text,
+)
 from app.services.tts_service import KokoroTtsService, TtsService, synthesize_text_in_paragraphs
 
 logger = logging.getLogger(__name__)
@@ -58,7 +67,9 @@ class ReadJob:
     image: object | None = None
     input_text: str | None = None
     lang_hint: str | None = None
+    compiler_mode: CompilerMode = "gemma_vision"
     text: str | None = None
+    story: StoryCompilation | None = None
     mime_type: str | None = None
     expires_at: str | None = None
     paragraphs_total: int = 0
@@ -81,6 +92,7 @@ class ReadJobManager:
         image: object | None,
         text: str | None,
         lang_hint: str | None,
+        compiler_mode: CompilerMode,
     ) -> ReadJob:
         now = datetime.now(UTC)
         job = ReadJob(
@@ -92,6 +104,7 @@ class ReadJobManager:
             image=image,
             input_text=text,
             lang_hint=lang_hint,
+            compiler_mode=compiler_mode,
         )
         with self._lock:
             self._jobs[job.request_id] = job
@@ -169,13 +182,20 @@ class ReadJobManager:
             image = job.image
             input_text = job.input_text
             lang_hint = job.lang_hint
+            compiler_mode = job.compiler_mode
 
         try:
             if image is not None:
-                recognized = await asyncio.to_thread(app.state.ocr_service.recognize, image, lang_hint)
-                source_text = recognized.text
+                with self._lock:
+                    compiling_job = self._jobs.get(request_id)
+                    if compiling_job is not None:
+                        compiling_job.stage = "story_compile"
+                        compiling_job.updated_at = datetime.now(UTC)
+                story = await _compile_story_for_image(app, image, compiler_mode, lang_hint)
+                source_text = story.spoken_script
             else:
-                source_text = (input_text or "").strip()
+                story = story_from_text(input_text or "", mode=compiler_mode)
+                source_text = story.spoken_script
 
             if not source_text:
                 raise ValueError("No readable text was produced from the submitted input.")
@@ -187,6 +207,7 @@ class ReadJobManager:
                 tts_job = self._jobs.get(request_id)
                 if tts_job is not None:
                     tts_job.text = source_text
+                    tts_job.story = story
                     tts_job.stage = "tts"
                     tts_job.updated_at = datetime.now(UTC)
 
@@ -235,6 +256,7 @@ class ReadJobManager:
             completed_job.stage = "completed"
             completed_job.updated_at = datetime.now(UTC)
             completed_job.text = source_text
+            completed_job.story = story
             completed_job.mime_type = audio.mime_type
             completed_job.expires_at = asset.expires_at
             completed_job.image = None
@@ -245,6 +267,7 @@ def create_app(
     *,
     settings=None,
     ocr_service: OcrService | None = None,
+    story_compiler_service: StoryCompilerService | None = None,
     tts_service: TtsService | None = None,
     media_store: MediaStore | None = None,
 ) -> FastAPI:
@@ -276,6 +299,10 @@ def create_app(
         enable_mkldnn=settings.paddle_enable_mkldnn,
         enable_hpi=settings.paddle_enable_hpi,
         cpu_threads=settings.paddle_cpu_threads,
+    )
+    app.state.story_compiler_service = story_compiler_service or GemmaStoryCompilerService(
+        api_key=settings.gemini_api_key,
+        model=settings.gemma_model,
     )
     app.state.tts_service = tts_service or KokoroTtsService(
         default_en_voice=settings.default_en_voice,
@@ -325,6 +352,7 @@ def create_app(
         image: UploadFile | None = File(None),
         text: str | None = Form(None),
         lang_hint: str | None = Form(None),
+        compiler_mode: str | None = Form(None),
         response_mode: str = Form("json"),
     ) -> ReadResponse | StreamingResponse:
         response_mode = response_mode.strip().lower()
@@ -334,6 +362,10 @@ def create_app(
             raise HTTPException(status_code=422, detail="Provide either `image` or `text`.")
         if image is not None and (text or "").strip():
             raise HTTPException(status_code=422, detail="Provide only one of `image` or `text`, not both.")
+        try:
+            resolved_compiler_mode = normalize_compiler_mode(compiler_mode, settings.story_compiler_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not app.state.read_gate.try_acquire():
             raise HTTPException(
                 status_code=503,
@@ -343,10 +375,11 @@ def create_app(
 
         try:
             request_id = uuid.uuid4().hex
+            story = None
             if image is not None:
                 normalized = await _read_and_normalize_upload(image, app)
-                recognized = await asyncio.to_thread(app.state.ocr_service.recognize, normalized.image, lang_hint)
-                source_text = recognized.text
+                story = await _compile_story_for_image(app, normalized.image, resolved_compiler_mode, lang_hint)
+                source_text = story.spoken_script
             else:
                 source_text = (text or "").strip()
 
@@ -370,6 +403,8 @@ def create_app(
                 mime_type=audio.mime_type,
                 text=source_text,
             )
+        except StoryCompilerError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         finally:
             app.state.read_gate.release()
 
@@ -386,6 +421,7 @@ def create_app(
             audio_url=audio_url,
             mime_type=audio.mime_type,
             expires_at=asset.expires_at,
+            story=story,
         )
 
     @app.post("/api/read/jobs", response_model=ReadJobAcceptedResponse, status_code=202)
@@ -393,11 +429,16 @@ def create_app(
         image: UploadFile | None = File(None),
         text: str | None = Form(None),
         lang_hint: str | None = Form(None),
+        compiler_mode: str | None = Form(None),
     ) -> ReadJobAcceptedResponse:
         if image is None and not (text or "").strip():
             raise HTTPException(status_code=422, detail="Provide either `image` or `text`.")
         if image is not None and (text or "").strip():
             raise HTTPException(status_code=422, detail="Provide only one of `image` or `text`, not both.")
+        try:
+            resolved_compiler_mode = normalize_compiler_mode(compiler_mode, settings.story_compiler_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         normalized_image = None
         input_text = None
@@ -416,6 +457,7 @@ def create_app(
             image=normalized_image,
             text=input_text,
             lang_hint=lang_hint,
+            compiler_mode=resolved_compiler_mode,
         )
         await app.state.read_job_manager.enqueue(job.request_id)
         return ReadJobAcceptedResponse(request_id=job.request_id, status=job.status)
@@ -439,6 +481,7 @@ def create_app(
             paragraphs_total=job.paragraphs_total,
             paragraphs_completed=job.paragraphs_completed,
             error=job.error,
+            story=job.story,
         )
 
     @app.get("/media/audio/{request_id}", name="get_audio_asset")
@@ -450,6 +493,30 @@ def create_app(
 
     _register_spa_routes(app)
     return app
+
+
+async def _compile_story_for_image(
+    app: FastAPI,
+    image: object,
+    compiler_mode: CompilerMode,
+    lang_hint: str | None,
+) -> StoryCompilation:
+    ocr_page = None
+    if compiler_mode == "ocr_assisted":
+        ocr_page = await asyncio.to_thread(app.state.ocr_service.recognize, image, lang_hint)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                app.state.story_compiler_service.compile_page,
+                image=image,
+                mode=compiler_mode,
+                lang_hint=lang_hint,
+                ocr_page=ocr_page,
+            ),
+            timeout=app.state.settings.story_compiler_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise StoryCompilerError("OpenRead story compilation timed out. Try a clearer page photo.") from exc
 
 
 async def _read_and_normalize_upload(upload: UploadFile, app: FastAPI):

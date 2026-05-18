@@ -18,14 +18,72 @@ vi.mock('./lib/playback', () => ({
 import { submitReadRequest } from './lib/api'
 import { captureVideoFrame } from './lib/capture'
 import { attemptPlayback } from './lib/playback'
+import type { ReadPayload, StoryCompilation } from './lib/api'
 
 const getUserMedia = vi.fn()
-const sampleReadPayload = {
+const stopTrack = vi.fn()
+
+const sampleStory: StoryCompilation = {
+  title: 'Moon Page',
+  spoken_script: 'hello world',
+  beats: [
+    {
+      beat_id: 'text-1',
+      kind: 'text',
+      narration: 'hello world',
+      source_text: 'hello world',
+      layout_region: 'top-left',
+      confidence: 0.98,
+    },
+    {
+      beat_id: 'illustration-1',
+      kind: 'illustration',
+      narration: 'The moon glows over the boat.',
+      source_text: null,
+      layout_region: 'center',
+      confidence: 0.84,
+    },
+  ],
+  caregiver_cues: [
+    {
+      cue_id: 'cue-1',
+      after_beat_id: 'illustration-1',
+      cue: 'Ask what might happen next.',
+      purpose: 'prediction',
+    },
+  ],
+  diagnostics: {
+    mode: 'gemma_vision',
+    layout_notes: 'Read top-left text first.',
+    ocr_used: false,
+    warnings: [],
+  },
+}
+
+const sampleReadPayload: ReadPayload = {
   request_id: 'req-1',
   text: 'hello world',
   audio_url: '/media/audio/req-1',
   mime_type: 'audio/wav',
   expires_at: '2026-04-14T00:00:00Z',
+  story: sampleStory,
+}
+
+function mountAppWithCamera() {
+  getUserMedia.mockResolvedValue({
+    getTracks: () => [{ stop: stopTrack }],
+  })
+  return mount(App)
+}
+
+async function openCamera(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get('[data-testid="main-action"]').trigger('click')
+  await flushPromises()
+}
+
+async function capturePage(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get('[data-testid="main-action"]').trigger('click')
+  await flushPromises()
 }
 
 describe('App', () => {
@@ -57,35 +115,36 @@ describe('App', () => {
     })
 
     const wrapper = mount(App)
-    await wrapper.get('button.primary').trigger('click')
+    await wrapper.get('[data-testid="main-action"]').trigger('click')
 
     expect(wrapper.text()).toContain('does not expose camera access')
   })
 
-  it('shows a permission error when Safari blocks camera access', async () => {
+  it('shows a permission error when camera access is blocked', async () => {
     getUserMedia.mockRejectedValue(new DOMException('blocked', 'NotAllowedError'))
 
     const wrapper = mount(App)
-    await wrapper.get('button.primary').trigger('click')
+    await wrapper.get('[data-testid="main-action"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Camera permission was denied')
   })
 
-  it('switches theme skins without leaving the capture screen', async () => {
-    const wrapper = mount(App)
+  it('uses one main button to open the camera and then capture a page', async () => {
+    vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
+    vi.mocked(submitReadRequest).mockResolvedValue(sampleReadPayload)
 
-    await wrapper.get('[data-theme-choice="moana"]').trigger('click')
+    const wrapper = mountAppWithCamera()
+    expect(wrapper.get('[data-testid="main-action"]').text()).toContain('Open Camera')
 
-    expect(wrapper.get('.shell').attributes('data-theme')).toBe('moana')
-    expect(wrapper.text()).toContain('Use a brighter ocean frame with a taller mobile camera box.')
-    expect(wrapper.text()).not.toContain('Let the page fill most of the frame.')
+    await openCamera(wrapper)
+    expect(wrapper.get('[data-testid="main-action"]').text()).toContain('Take Photo')
+
+    await capturePage(wrapper)
+    expect(submitReadRequest).toHaveBeenCalledWith(expect.any(Blob), 'bilingual', 'gemma_vision', expect.any(Function))
   })
 
-  it('shows a loading animation while upload and audio generation are in progress', async () => {
-    getUserMedia.mockResolvedValue({
-      getTracks: () => [{ stop: vi.fn() }],
-    })
+  it('shows a clear reading state while the request is in progress', async () => {
     let resolveRequest: ((value: typeof sampleReadPayload) => void) | undefined
     vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
     vi.mocked(submitReadRequest).mockImplementation(
@@ -95,26 +154,55 @@ describe('App', () => {
         }),
     )
 
-    const wrapper = mount(App)
-    await wrapper.get('button.primary').trigger('click')
-    await flushPromises()
-    await wrapper.get('button.capture').trigger('click')
-    await flushPromises()
+    const wrapper = mountAppWithCamera()
+    await openCamera(wrapper)
+    await capturePage(wrapper)
 
-    expect(wrapper.text()).toContain('Reading the page...')
+    expect(wrapper.text()).toContain('Reading page')
+    expect(wrapper.text()).toContain('Understanding the page...')
 
     resolveRequest?.(sampleReadPayload)
     await flushPromises()
   })
 
-  it('shows OCR text before audio generation finishes', async () => {
-    getUserMedia.mockResolvedValue({
-      getTracks: () => [{ stop: vi.fn() }],
-    })
+  it('shows story compilation progress before audio generation starts', async () => {
     let resolveRequest: ((value: typeof sampleReadPayload) => void) | undefined
     vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
     vi.mocked(submitReadRequest).mockImplementation(
-      (_blob, _langHint, onProgress) =>
+      (_blob, _langHint, _compilerMode, onProgress) =>
+        new Promise((resolve) => {
+          onProgress?.({
+            request_id: 'req-1',
+            status: 'processing',
+            stage: 'story_compile',
+            text: null,
+            audio_url: null,
+            mime_type: null,
+            expires_at: null,
+            paragraphs_total: 0,
+            paragraphs_completed: 0,
+            error: null,
+            story: null,
+          })
+          resolveRequest = resolve
+        }),
+    )
+
+    const wrapper = mountAppWithCamera()
+    await openCamera(wrapper)
+    await capturePage(wrapper)
+
+    expect(wrapper.text()).toContain('Finding the story order')
+
+    resolveRequest?.(sampleReadPayload)
+    await flushPromises()
+  })
+
+  it('shows generated text, reading order, questions, and audio progress', async () => {
+    let resolveRequest: ((value: typeof sampleReadPayload) => void) | undefined
+    vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
+    vi.mocked(submitReadRequest).mockImplementation(
+      (_blob, _langHint, _compilerMode, onProgress) =>
         new Promise((resolve) => {
           onProgress?.({
             request_id: 'req-1',
@@ -127,40 +215,38 @@ describe('App', () => {
             paragraphs_total: 3,
             paragraphs_completed: 1,
             error: null,
+            story: sampleStory,
           })
           resolveRequest = resolve
         }),
     )
 
-    const wrapper = mount(App)
-    await wrapper.get('button.primary').trigger('click')
-    await flushPromises()
-    await wrapper.get('button.capture').trigger('click')
-    await flushPromises()
+    const wrapper = mountAppWithCamera()
+    await openCamera(wrapper)
+    await capturePage(wrapper)
 
-    expect(wrapper.text()).toContain('hello world')
-    expect(wrapper.text()).toContain('Audio is still rendering. 1/3 paragraphs complete.')
+    expect(wrapper.get('[data-testid="story-text"]').text()).toContain('hello world')
+    expect(wrapper.text()).toContain('Reading Order')
+    expect(wrapper.text()).toContain('The moon glows over the boat.')
+    expect(wrapper.text()).toContain('Questions to Ask')
+    expect(wrapper.text()).toContain('Ask what might happen next.')
+    expect(wrapper.text()).toContain('1/3 audio parts')
 
     resolveRequest?.(sampleReadPayload)
     await flushPromises()
   })
 
   it('shows a manual play button when autoplay is rejected', async () => {
-    getUserMedia.mockResolvedValue({
-      getTracks: () => [{ stop: vi.fn() }],
-    })
     vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
     vi.mocked(submitReadRequest).mockResolvedValue(sampleReadPayload)
     vi.mocked(attemptPlayback).mockResolvedValue(true)
 
-    const wrapper = mount(App)
-    await wrapper.get('button.primary').trigger('click')
-    await flushPromises()
-    await wrapper.get('button.capture').trigger('click')
-    await flushPromises()
+    const wrapper = mountAppWithCamera()
+    await openCamera(wrapper)
+    await capturePage(wrapper)
 
     expect(wrapper.text()).toContain('Audio is ready')
     expect(wrapper.text()).toContain('Play Audio')
-    expect(wrapper.text()).toContain('hello world')
+    expect(wrapper.get('[data-testid="story-text"]').text()).toContain('hello world')
   })
 })

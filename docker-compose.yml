@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: book-voice-webapp
+    container_name: openread
     build:
       context: .
       dockerfile: Dockerfile
@@ -8,6 +8,10 @@ services:
       - .env
     environment:
       APP_ENV: ${APP_ENV:-production}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMMA_MODEL: ${GEMMA_MODEL:-gemma-4-31b-it}
+      STORY_COMPILER_MODE: ${STORY_COMPILER_MODE:-gemma_vision}
+      STORY_COMPILER_TIMEOUT_SECONDS: ${STORY_COMPILER_TIMEOUT_SECONDS:-90}
       KOKORO_DEVICE: ${KOKORO_DEVICE:-cpu}
       PADDLE_USE_GPU: ${PADDLE_USE_GPU:-0}
       PADDLE_ENABLE_MKLDNN: ${PADDLE_ENABLE_MKLDNN:-0}

@@ -1,1 +1,1 @@
-"""Application package for the book voice backend."""
+"""Application package for the OpenRead backend."""

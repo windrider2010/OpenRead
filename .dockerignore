@@ -3,6 +3,18 @@
 .dockerignore
 .env
 .env.*
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+credentials*.json
+*credentials*.json
+secrets*.json
+*secrets*.json
+*service-account*.json
+*service_account*.json
 .pytest_cache/
 **/.pytest_cache/
 **/__pycache__/
@@ -20,6 +32,7 @@ backend/README.md
 
 web/node_modules/
 web/dist/
+web/var/
 web/*.tsbuildinfo
 
 deploy/

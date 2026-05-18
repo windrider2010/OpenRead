@@ -4,11 +4,43 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+Thumbs.db
 
+# Local environments and secrets.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+credentials*.json
+*credentials*.json
+secrets*.json
+*secrets*.json
+*service-account*.json
+*service_account*.json
+
+# Runtime outputs and local diagnostics.
+*.log
+*.wav
+*.mp3
+*.mp4
+*.webm
+tmp/
+temp/
 backend/.venv/
 backend/var/
+web/var/
 web/node_modules/
 web/dist/
 *.tsbuildinfo
 coverage/
-.env
+
+# Local support notes.
+app Q&A.md

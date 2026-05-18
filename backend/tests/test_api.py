@@ -10,25 +10,34 @@ from PIL import Image
 
 from app.config import Settings
 from app.main import create_app
+from app.models import CompilerMode, StoryCompilation
 from app.services.media_store import MediaStore
 from app.services.ocr_service import RecognizedBlock, RecognizedPage
 from app.services.tts_service import SynthesizedAudio
 
 
 class FakeOcrService:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def recognize(self, image: Image.Image, lang_hint: str | None = None) -> RecognizedPage:
+        self.calls += 1
         return RecognizedPage(
-            text="你好 world",
+            text="hello world",
             blocks=[
-                RecognizedBlock(text="你好", confidence=0.99, box=[[0, 0], [1, 0], [1, 1], [0, 1]]),
+                RecognizedBlock(text="hello", confidence=0.99, box=[[0, 0], [1, 0], [1, 1], [0, 1]]),
                 RecognizedBlock(text="world", confidence=0.98, box=[[2, 2], [3, 2], [3, 3], [2, 3]]),
             ],
-            detected_scripts=["cjk", "latin"],
+            detected_scripts=["latin"],
         )
 
 
 class FakeTtsService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
     def synthesize_text(self, text: str, lang_hint: str | None = None) -> SynthesizedAudio:
+        self.calls.append(text)
         return SynthesizedAudio(audio_bytes=b"RIFFfakewav", mime_type="audio/wav", sample_rate=24000)
 
     def preload(self) -> None:
@@ -37,6 +46,7 @@ class FakeTtsService:
 
 class FakePreloadOcrService(FakeOcrService):
     def __init__(self) -> None:
+        super().__init__()
         self.preloaded = False
 
     def preload(self) -> None:
@@ -45,6 +55,7 @@ class FakePreloadOcrService(FakeOcrService):
 
 class FakePreloadTtsService(FakeTtsService):
     def __init__(self) -> None:
+        super().__init__()
         self.preloaded = False
 
     def preload(self) -> None:
@@ -53,6 +64,7 @@ class FakePreloadTtsService(FakeTtsService):
 
 class BlockingTtsService(FakeTtsService):
     def __init__(self) -> None:
+        super().__init__()
         self.started = threading.Event()
         self.release = threading.Event()
 
@@ -62,10 +74,68 @@ class BlockingTtsService(FakeTtsService):
         return super().synthesize_text(text, lang_hint)
 
 
+class FakeStoryCompilerService:
+    def __init__(self) -> None:
+        self.calls: list[CompilerMode] = []
+        self.ocr_pages: list[RecognizedPage | None] = []
+
+    def compile_page(
+        self,
+        *,
+        image: Image.Image,
+        mode: CompilerMode,
+        lang_hint: str | None = None,
+        ocr_page: RecognizedPage | None = None,
+    ) -> StoryCompilation:
+        self.calls.append(mode)
+        self.ocr_pages.append(ocr_page)
+        return _sample_story(mode=mode, ocr_used=ocr_page is not None)
+
+
+def _sample_story(*, mode: CompilerMode = "gemma_vision", ocr_used: bool = False) -> StoryCompilation:
+    return StoryCompilation(
+        title="Moon Page",
+        spoken_script="Hello world. The moon glows over the little boat.",
+        beats=[
+            {
+                "beat_id": "text-1",
+                "kind": "text",
+                "narration": "Hello world.",
+                "source_text": "Hello world.",
+                "layout_region": "top-left",
+                "confidence": 0.98,
+            },
+            {
+                "beat_id": "illustration-1",
+                "kind": "illustration",
+                "narration": "The moon glows over the little boat.",
+                "source_text": None,
+                "layout_region": "center",
+                "confidence": 0.84,
+            },
+        ],
+        caregiver_cues=[
+            {
+                "cue_id": "cue-1",
+                "after_beat_id": "illustration-1",
+                "cue": "Ask what the child thinks will happen next.",
+                "purpose": "prediction",
+            }
+        ],
+        diagnostics={
+            "mode": mode,
+            "layout_notes": "Read top-left text before the central illustration.",
+            "ocr_used": ocr_used,
+            "warnings": [],
+        },
+    )
+
+
 def _make_client(tmp_path: Path, *, settings: Settings | None = None) -> TestClient:
     app = create_app(
         settings=settings,
         ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -99,8 +169,8 @@ def test_ocr_endpoint_returns_text_and_blocks(tmp_path: Path) -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["text"] == "你好 world"
-    assert payload["detected_scripts"] == ["cjk", "latin"]
+    assert payload["text"] == "hello world"
+    assert payload["detected_scripts"] == ["latin"]
     assert len(payload["blocks"]) == 2
 
 
@@ -115,7 +185,7 @@ def test_read_endpoint_rejects_image_and_text_together(tmp_path: Path) -> None:
     assert "only one" in response.json()["detail"]
 
 
-def test_read_endpoint_json_mode_returns_audio_url_and_text(tmp_path: Path) -> None:
+def test_read_endpoint_json_mode_returns_audio_url_text_and_story(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     response = client.post(
         "/api/read",
@@ -124,9 +194,32 @@ def test_read_endpoint_json_mode_returns_audio_url_and_text(tmp_path: Path) -> N
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["text"] == "你好 world"
+    assert payload["text"] == "Hello world. The moon glows over the little boat."
     assert payload["mime_type"] == "audio/wav"
     assert payload["audio_url"].endswith(f'/media/audio/{payload["request_id"]}')
+    assert payload["story"]["beats"][1]["kind"] == "illustration"
+    assert payload["story"]["caregiver_cues"][0]["purpose"] == "prediction"
+
+
+def test_read_endpoint_sends_only_spoken_script_to_tts(tmp_path: Path) -> None:
+    tts = FakeTtsService()
+    app = create_app(
+        ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
+        tts_service=tts,
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/read",
+        files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        data={"lang_hint": "bilingual"},
+    )
+
+    assert response.status_code == 200
+    assert tts.calls == ["Hello world. The moon glows over the little boat."]
+    assert "Ask what the child thinks" not in tts.calls[0]
 
 
 def test_read_endpoint_stream_mode_returns_audio_and_link(tmp_path: Path) -> None:
@@ -141,7 +234,7 @@ def test_read_endpoint_stream_mode_returns_audio_and_link(tmp_path: Path) -> Non
     assert response.content == b"RIFFfakewav"
 
 
-def test_read_job_endpoint_returns_completed_status_and_audio_url(tmp_path: Path) -> None:
+def test_read_job_endpoint_returns_completed_status_audio_url_and_story(tmp_path: Path) -> None:
     with _make_client(tmp_path) as client:
         start_response = client.post(
             "/api/read/jobs",
@@ -154,17 +247,20 @@ def test_read_job_endpoint_returns_completed_status_and_audio_url(tmp_path: Path
         payload = _wait_for_job_completion(client, request_id)
         assert payload["status"] == "completed"
         assert payload["stage"] == "completed"
-        assert "world" in payload["text"]
+        assert "moon glows" in payload["text"]
         assert payload["mime_type"] == "audio/wav"
         assert payload["audio_url"].endswith(f"/media/audio/{request_id}")
+        assert payload["story"]["title"] == "Moon Page"
+        assert payload["story"]["caregiver_cues"][0]["cue"].startswith("Ask what")
         assert payload["paragraphs_total"] >= 1
         assert payload["paragraphs_completed"] == payload["paragraphs_total"]
 
 
-def test_read_job_endpoint_surfaces_ocr_text_before_audio_completion(tmp_path: Path) -> None:
+def test_read_job_endpoint_surfaces_story_before_audio_completion(tmp_path: Path) -> None:
     blocking_tts = BlockingTtsService()
     app = create_app(
         ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
         tts_service=blocking_tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -184,7 +280,8 @@ def test_read_job_endpoint_surfaces_ocr_text_before_audio_completion(tmp_path: P
         payload = status_response.json()
         assert payload["status"] == "processing"
         assert payload["stage"] == "tts"
-        assert "world" in payload["text"]
+        assert "moon glows" in payload["text"]
+        assert payload["story"]["beats"][0]["layout_region"] == "top-left"
         assert payload["paragraphs_total"] == 1
         assert payload["paragraphs_completed"] == 0
 
@@ -193,9 +290,41 @@ def test_read_job_endpoint_surfaces_ocr_text_before_audio_completion(tmp_path: P
         assert completed["status"] == "completed"
 
 
+def test_read_job_endpoint_ocr_assisted_mode_invokes_ocr_before_compiler(tmp_path: Path) -> None:
+    ocr = FakeOcrService()
+    compiler = FakeStoryCompilerService()
+    app = create_app(
+        ocr_service=ocr,
+        story_compiler_service=compiler,
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/read/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+            data={"compiler_mode": "ocr_assisted"},
+        )
+        assert start_response.status_code == 202
+        completed = _wait_for_job_completion(client, start_response.json()["request_id"])
+
+    assert completed["status"] == "completed"
+    assert ocr.calls == 1
+    assert compiler.calls == ["ocr_assisted"]
+    assert compiler.ocr_pages[0] is not None
+    assert completed["story"]["diagnostics"]["ocr_used"] is True
+
+
 def test_read_job_endpoint_rejects_empty_input(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     start_response = client.post("/api/read/jobs", data={"text": "   "})
+    assert start_response.status_code == 422
+
+
+def test_read_job_endpoint_rejects_invalid_compiler_mode(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    start_response = client.post("/api/read/jobs", data={"text": "hello", "compiler_mode": "bad"})
     assert start_response.status_code == 422
 
 
@@ -211,6 +340,7 @@ def test_audio_asset_endpoint_serves_cached_wav(tmp_path: Path) -> None:
 def test_read_endpoint_returns_busy_when_gate_is_full(tmp_path: Path) -> None:
     app = create_app(
         ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -236,6 +366,7 @@ def test_app_preloads_runtime_dependencies_when_enabled(tmp_path: Path) -> None:
     app = create_app(
         settings=settings,
         ocr_service=ocr,
+        story_compiler_service=FakeStoryCompilerService(),
         tts_service=tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
