@@ -78,6 +78,8 @@ class FakeStoryCompilerService:
     def __init__(self) -> None:
         self.calls: list[CompilerMode] = []
         self.ocr_pages: list[RecognizedPage | None] = []
+        self.request_ids: list[str | None] = []
+        self.client_ips: list[str | None] = []
 
     def compile_page(
         self,
@@ -86,9 +88,13 @@ class FakeStoryCompilerService:
         mode: CompilerMode,
         lang_hint: str | None = None,
         ocr_page: RecognizedPage | None = None,
+        request_id: str | None = None,
+        client_ip: str | None = None,
     ) -> StoryCompilation:
         self.calls.append(mode)
         self.ocr_pages.append(ocr_page)
+        self.request_ids.append(request_id)
+        self.client_ips.append(client_ip)
         return _sample_story(mode=mode, ocr_used=ocr_page is not None)
 
 
@@ -199,6 +205,27 @@ def test_read_endpoint_json_mode_returns_audio_url_text_and_story(tmp_path: Path
     assert payload["audio_url"].endswith(f'/media/audio/{payload["request_id"]}')
     assert payload["story"]["beats"][1]["kind"] == "illustration"
     assert payload["story"]["caregiver_cues"][0]["purpose"] == "prediction"
+
+
+def test_read_endpoint_passes_request_id_and_forwarded_ip_to_compiler(tmp_path: Path) -> None:
+    compiler = FakeStoryCompilerService()
+    app = create_app(
+        ocr_service=FakeOcrService(),
+        story_compiler_service=compiler,
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/read",
+        files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        headers={"x-forwarded-for": "203.0.113.42, 10.0.0.1"},
+    )
+
+    assert response.status_code == 200
+    assert compiler.request_ids == [response.json()["request_id"]]
+    assert compiler.client_ips == ["203.0.113.42"]
 
 
 def test_read_endpoint_sends_only_spoken_script_to_tts(tmp_path: Path) -> None:
@@ -359,7 +386,7 @@ def test_read_endpoint_rejects_overlong_text(tmp_path: Path) -> None:
     assert "character limit" in response.json()["detail"]
 
 
-def test_app_preloads_runtime_dependencies_when_enabled(tmp_path: Path) -> None:
+def test_app_preloads_only_tts_by_default_when_enabled(tmp_path: Path) -> None:
     ocr = FakePreloadOcrService()
     tts = FakePreloadTtsService()
     settings = Settings(preload_models=True)
@@ -372,5 +399,22 @@ def test_app_preloads_runtime_dependencies_when_enabled(tmp_path: Path) -> None:
     )
     with TestClient(app):
         pass
-    assert ocr.preloaded is True
+    assert ocr.preloaded is False
     assert tts.preloaded is True
+
+
+def test_app_can_preload_ocr_when_enabled(tmp_path: Path) -> None:
+    ocr = FakePreloadOcrService()
+    tts = FakePreloadTtsService()
+    settings = Settings(preload_models=True, preload_ocr=True, preload_tts=False)
+    app = create_app(
+        settings=settings,
+        ocr_service=ocr,
+        story_compiler_service=FakeStoryCompilerService(),
+        tts_service=tts,
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+    with TestClient(app):
+        pass
+    assert ocr.preloaded is True
+    assert tts.preloaded is False

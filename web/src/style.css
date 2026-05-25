@@ -324,14 +324,36 @@ button {
   color-scheme: light;
 }
 
-.secondary-action {
+.start-reading-action {
   width: 100%;
-  min-height: 48px;
-  border: 1px solid rgba(83, 55, 111, 0.22);
-  border-radius: 18px;
-  color: #2c1d3e;
-  font-weight: 800;
-  background: #fff2bd;
+  min-height: 70px;
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 24px;
+  color: #241835;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.42), transparent 42%),
+    linear-gradient(135deg, #fff1a3, #f5a657 50%, #9fcfb9);
+  box-shadow:
+    0 16px 30px rgba(89, 56, 93, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.start-reading-action span {
+  font-size: 1.22rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.start-reading-action small {
+  color: rgba(36, 24, 53, 0.74);
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.2;
 }
 
 .story-section {
@@ -452,7 +474,7 @@ button {
 }
 
 .magic-button:focus-visible,
-.secondary-action:focus-visible {
+.start-reading-action:focus-visible {
   outline: 3px solid rgba(102, 80, 157, 0.42);
   outline-offset: 3px;
 }
@@ -526,9 +548,9 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  .reader-shell *,
+  .reader-shell *::before,
+  .reader-shell *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;

@@ -39,6 +39,8 @@ class Settings:
         "PRELOAD_MODELS",
         os.getenv("APP_ENV", "development").strip().lower() == "production",
     )
+    preload_ocr: bool = _bool_env("PRELOAD_OCR", False)
+    preload_tts: bool = _bool_env("PRELOAD_TTS", True)
     image_max_side: int = int(os.getenv("IMAGE_MAX_SIDE", "2200"))
     media_ttl_seconds: int = int(os.getenv("MEDIA_TTL_SECONDS", "3600"))
     media_cleanup_interval_seconds: int = int(os.getenv("MEDIA_CLEANUP_INTERVAL_SECONDS", "300"))
@@ -57,14 +59,19 @@ class Settings:
     gemma_model: str = os.getenv("GEMMA_MODEL", "gemma-4-31b-it")
     story_compiler_mode: str = os.getenv("STORY_COMPILER_MODE", "gemma_vision")
     story_compiler_timeout_seconds: int = max(1, int(os.getenv("STORY_COMPILER_TIMEOUT_SECONDS", "90")))
+    openread_log_gemma_failures: bool = _bool_env("OPENREAD_LOG_GEMMA_FAILURES", True)
+    openread_log_gemma_successes: bool = _bool_env("OPENREAD_LOG_GEMMA_SUCCESSES", True)
+    openread_gemma_log_ttl_seconds: int = max(60, int(os.getenv("OPENREAD_GEMMA_LOG_TTL_SECONDS", "604800")))
     backend_dir: Path = BACKEND_DIR
     repo_dir: Path = REPO_DIR
     web_dist_dir: Path = WEB_DIST_DIR
     media_root: Path = BACKEND_DIR / "var" / "media"
+    gemma_diagnostics_root: Path = BACKEND_DIR / "var" / "diagnostics" / "gemma"
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()
     settings.media_root.mkdir(parents=True, exist_ok=True)
+    settings.gemma_diagnostics_root.mkdir(parents=True, exist_ok=True)
     return settings

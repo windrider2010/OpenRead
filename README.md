@@ -4,6 +4,42 @@ OpenRead is a mobile-first picture-book read-aloud app built for the Kaggle Gemm
 
 The core technical idea is the story-plan layer. OpenRead does not send OCR text directly to TTS. It sends the page image to Gemma 4, optionally with PaddleOCR evidence, and asks Gemma to return a validated JSON reading plan. Kokoro TTS then receives only the child-facing `spoken_script`.
 
+## What Makes OpenRead Different
+
+OpenRead starts from a real picture-book page photo, not a prepared ebook, audiobook, PDF, web page, or fixed lesson library. The intended moment is simple: a child brings a physical book, a caregiver takes one photo, and the app helps keep the story going.
+
+OpenRead is not OCR-first. OCR can recognize letters, but children's books are visual stories with speech bubbles, curved text, captions, jokes hidden in illustrations, and clues that may need to be understood before a sentence makes sense. OpenRead uses Gemma 4 as a multimodal story compiler to reason over the full page image, not just extracted text.
+
+OpenRead can include the picture in the reading experience. When an illustration adds meaningful context, the story compiler can add a short child-facing narration beat, while still preserving visible page text where possible.
+
+OpenRead returns a structured reading plan instead of one opaque paragraph. The plan separates the final spoken script, ordered reading beats, illustration narration, caregiver cues, diagnostics, and TTS-ready output. This makes the system easier to validate, debug, audit, display in the frontend, and send safely to Kokoro TTS.
+
+OpenRead is designed as an open-source, self-hostable public-interest tool. It does not require user accounts in the current deployment model, does not persist uploaded page photos, and keeps temporary diagnostics focused on abuse investigation and reproducible errors.
+
+## Governance and Ownership
+
+OpenRead is an independent open-source public-interest AI project for early literacy access, currently maintained by Hewei Li with infrastructure support from Sperion LLC.
+
+## Citation
+
+If you reference OpenRead in a writeup, demo, research note, benchmark, or derivative project, please cite it as:
+
+```text
+Li, Hewei. OpenRead: A layout-aware picture-book read-aloud system using Gemma 4 and Kokoro TTS. 2026. GitHub: https://github.com/windrider2010/OpenRead
+```
+
+BibTeX:
+
+```bibtex
+@software{li2026openread,
+  author = {Li, Hewei},
+  title = {OpenRead: A Layout-Aware Picture-Book Read-Aloud System Using Gemma 4 and Kokoro TTS},
+  year = {2026},
+  url = {https://github.com/windrider2010/OpenRead},
+  note = {Independent open-source public-interest AI project for early literacy access}
+}
+```
+
 ## What It Does
 
 - Captures a page photo from the phone camera in a one-screen Vue app.
@@ -21,7 +57,7 @@ OpenRead/
   backend/   FastAPI API, Gemma story compiler, OCR/TTS services, tests
   docs/      Technical writeup for the hackathon pitch
   deploy/    Nginx and systemd examples for a self-hosted Docker deploy
-  web/       Vue 3 + Vite mobile web app and HTML/CSS pitch demo
+  web/       Vue 3 + Vite mobile web app and public OpenRead initiative page
 ```
 
 ## Runtime Requirements
@@ -109,7 +145,8 @@ Important environment variables from `.env.example`:
 - `MAX_TEXT_CHARS` bounds direct text input and OCR output sent to TTS.
 - `MAX_ACTIVE_READS` controls async read-job worker count and synchronous `/api/read` concurrency.
 - `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, and `STORY_COMPILER_TIMEOUT_SECONDS` control the Gemma story compiler.
-- `PRELOAD_MODELS=1` warms PaddleOCR and Kokoro at startup; this improves first-request latency but makes startup slower and may download model assets.
+- `OPENREAD_LOG_GEMMA_FAILURES`, `OPENREAD_LOG_GEMMA_SUCCESSES`, and `OPENREAD_GEMMA_LOG_TTL_SECONDS` control temporary raw Gemma-output diagnostics. By default, success and failure diagnostics are enabled and retained for 7 days.
+- `PRELOAD_MODELS=1` enables startup preloading. `PRELOAD_TTS=1` warms Kokoro by default; `PRELOAD_OCR=0` leaves PaddleOCR lazy-loaded because OCR is only used for diagnostics and `ocr_assisted`.
 - `MEDIA_TTL_SECONDS`, `MEDIA_CLEANUP_INTERVAL_SECONDS`, and `MEDIA_MAX_BYTES` control generated-audio retention.
 - `DEFAULT_ZH_VOICE`, `DEFAULT_EN_VOICE`, `KOKORO_SPEED`, `KOKORO_DEVICE`, and `ESPEAK_NG_PATH` control Kokoro synthesis.
 - `PADDLE_USE_GPU`, `PADDLE_ENABLE_MKLDNN`, `PADDLE_ENABLE_HPI`, and `PADDLE_CPU_THREADS` control PaddleOCR runtime behavior.
@@ -119,6 +156,7 @@ Important environment variables from `.env.example`:
 - Uploaded page photos are validated, normalized, and processed in memory by the backend. They are not durably stored by the application.
 - Read jobs are in-memory for the hackathon build. They are not durable across backend restarts.
 - Generated audio is cached under `backend/var/media` with TTL and disk-budget cleanup.
+- Gemma diagnostics are cached under `backend/var/diagnostics/gemma/{request_id}.json` with a 7-day default TTL. These records include raw Gemma text output, validation errors, fallback status, final spoken script, compiler mode, model name, and client IP for abuse investigation. They do not include uploaded page images.
 - `.env`, local logs, generated media, diagnostics, private keys, certificates, credentials, and local support notes are ignored by Git.
 - The structured Gemma output is auditable before speech synthesis: the UI can inspect the plan, while Kokoro receives only `spoken_script`.
 
@@ -150,8 +188,8 @@ npm test
 ## Hackathon Materials
 
 - [Technical design writeup](docs/openread-technical-writeup.md)
-- Cinematic HTML/CSS demo: `http://localhost:5173/demo/openread-cinematic.html` after starting Vite
-- If Vite is running on port 5174, use `http://localhost:5174/demo/openread-cinematic.html`
+- Parent-child friendly initiative page: `/openread` in the web app, or `https://reader.sperion.io/openread` on the public deployment.
+- Local Vite example: `http://localhost:5173/openread`.
 
 ## Open Source Acknowledgements and Attribution
 
@@ -196,7 +234,7 @@ This acknowledgement is not a substitute for a full legal review before producti
 - Uploaded images are validated and normalized entirely in memory; they are not persisted to disk.
 - Story compilation requires `GEMINI_API_KEY`; text-only TTS requests still work without it.
 - Audio files and their JSON metadata are cached under `backend/var/media` on local disk with a TTL, a background cleanup loop, and an overall disk budget guard.
-- In production, OCR/TTS models are preloaded at startup so the first user request does not pay the cold-start download and initialization cost.
+- In production, Kokoro TTS is preloaded by default so the first read-aloud request does not pay the TTS cold-start cost. PaddleOCR is lazy-loaded unless `PRELOAD_OCR=1`.
 - `MAX_ACTIVE_READS=1` limits concurrent OCR+TTS jobs on CPU-first deployments.
 - The Docker image is aligned for Oracle Ubuntu hosts running Linux containers: Node builds the Vue bundle in a separate stage, Python 3.12 runs the API, and the runtime image includes the Linux shared libraries commonly required by PaddleOCR/OpenCV and Kokoro/eSpeak.
 - This stack is aligned for Oracle Ubuntu `arm64` and `x86_64` CPU hosts. `paddlepaddle` is resolved from Paddle's official CPU wheel index instead of PyPI so Linux `aarch64` builds can install the official ARM wheel in Docker.
@@ -252,7 +290,12 @@ GEMINI_API_KEY=your-google-genai-key
 GEMMA_MODEL=gemma-4-31b-it
 STORY_COMPILER_MODE=gemma_vision
 STORY_COMPILER_TIMEOUT_SECONDS=90
+OPENREAD_LOG_GEMMA_FAILURES=1
+OPENREAD_LOG_GEMMA_SUCCESSES=1
+OPENREAD_GEMMA_LOG_TTL_SECONDS=604800
 PRELOAD_MODELS=1
+PRELOAD_TTS=1
+PRELOAD_OCR=0
 MEDIA_TTL_SECONDS=3600
 MEDIA_CLEANUP_INTERVAL_SECONDS=300
 MEDIA_MAX_BYTES=536870912

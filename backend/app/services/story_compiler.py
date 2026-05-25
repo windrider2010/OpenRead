@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import io
-from typing import Protocol
+import json
+import logging
+import re
+from typing import Any, Protocol
 
 from PIL import Image
 from pydantic import ValidationError
 
 from app.models import CompilerMode, StoryCompilation
 from app.services.ocr_service import RecognizedPage
+
+logger = logging.getLogger(__name__)
 
 
 class StoryCompilerError(RuntimeError):
@@ -22,14 +27,28 @@ class StoryCompilerService(Protocol):
         mode: CompilerMode,
         lang_hint: str | None = None,
         ocr_page: RecognizedPage | None = None,
+        request_id: str | None = None,
+        client_ip: str | None = None,
     ) -> StoryCompilation:
         """Compile a picture-book page image into a structured read-aloud story."""
 
 
+class GemmaDiagnosticsRecorder(Protocol):
+    def record(self, payload: dict[str, Any]) -> object | None:
+        """Persist one Gemma diagnostic payload."""
+
+
 class GemmaStoryCompilerService:
-    def __init__(self, *, api_key: str | None, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        model: str,
+        diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
+    ) -> None:
         self._api_key = api_key
         self._model = model
+        self._diagnostics_recorder = diagnostics_recorder
 
     def compile_page(
         self,
@@ -38,6 +57,8 @@ class GemmaStoryCompilerService:
         mode: CompilerMode,
         lang_hint: str | None = None,
         ocr_page: RecognizedPage | None = None,
+        request_id: str | None = None,
+        client_ip: str | None = None,
     ) -> StoryCompilation:
         if not self._api_key:
             raise StoryCompilerError("GEMINI_API_KEY is required for OpenRead story compilation.")
@@ -45,6 +66,8 @@ class GemmaStoryCompilerService:
         image_bytes = _image_to_jpeg_bytes(image)
         prompt = _build_prompt(mode=mode, lang_hint=lang_hint, ocr_page=ocr_page)
         last_error: Exception | None = None
+        raw_outputs: list[dict[str, object]] = []
+        validation_errors: list[str] = []
 
         for attempt in range(2):
             repair_note = ""
@@ -54,15 +77,92 @@ class GemmaStoryCompilerService:
                     f"the schema. Validation error: {last_error}"
                 )
             raw = self._generate(image_bytes=image_bytes, prompt=f"{prompt}{repair_note}")
+            raw_outputs.append({"attempt": attempt + 1, "output": raw})
             try:
-                compiled = StoryCompilation.model_validate_json(raw)
-                return _validated_compilation(compiled, expected_mode=mode)
+                compiled = _parse_story_json(raw)
+                story = _validated_compilation(compiled, expected_mode=mode)
+                self._record_diagnostic(
+                    request_id=request_id,
+                    client_ip=client_ip,
+                    mode=mode,
+                    lang_hint=lang_hint,
+                    status="completed",
+                    raw_outputs=raw_outputs,
+                    validation_errors=validation_errors,
+                    final_story=story,
+                    fallback_used=False,
+                    error=None,
+                )
+                return story
             except (ValidationError, ValueError) as exc:
                 last_error = exc
+                validation_errors.append(str(exc))
                 if attempt == 1:
+                    fallback = _story_from_text_like_output(raw, mode=mode)
+                    if fallback is not None:
+                        self._record_diagnostic(
+                            request_id=request_id,
+                            client_ip=client_ip,
+                            mode=mode,
+                            lang_hint=lang_hint,
+                            status="completed_with_fallback",
+                            raw_outputs=raw_outputs,
+                            validation_errors=validation_errors,
+                            final_story=fallback,
+                            fallback_used=True,
+                            error=str(exc),
+                        )
+                        return fallback
+                    self._record_diagnostic(
+                        request_id=request_id,
+                        client_ip=client_ip,
+                        mode=mode,
+                        lang_hint=lang_hint,
+                        status="failed",
+                        raw_outputs=raw_outputs,
+                        validation_errors=validation_errors,
+                        final_story=None,
+                        fallback_used=False,
+                        error=str(exc),
+                    )
                     raise StoryCompilerError(f"Gemma returned invalid story JSON: {exc}") from exc
 
         raise StoryCompilerError("Gemma did not return a valid story compilation.")
+
+    def _record_diagnostic(
+        self,
+        *,
+        request_id: str | None,
+        client_ip: str | None,
+        mode: CompilerMode,
+        lang_hint: str | None,
+        status: str,
+        raw_outputs: list[dict[str, object]],
+        validation_errors: list[str],
+        final_story: StoryCompilation | None,
+        fallback_used: bool,
+        error: str | None,
+    ) -> None:
+        if self._diagnostics_recorder is None or request_id is None:
+            return
+        payload: dict[str, Any] = {
+            "request_id": request_id,
+            "client_ip": client_ip,
+            "model": self._model,
+            "compiler_mode": mode,
+            "lang_hint": lang_hint,
+            "status": status,
+            "fallback_used": fallback_used,
+            "raw_gemma_outputs": raw_outputs,
+            "validation_errors": validation_errors,
+            "error": error,
+            "final_spoken_script": final_story.spoken_script if final_story is not None else None,
+            "story_diagnostics": final_story.diagnostics.model_dump() if final_story is not None else None,
+        }
+        try:
+            self._diagnostics_recorder.record(payload)
+        except Exception:
+            logger.exception("Failed to record Gemma diagnostics for request %s", request_id)
 
     def _generate(self, *, image_bytes: bytes, prompt: str) -> str:
         try:
@@ -102,15 +202,30 @@ def story_from_text(text: str, *, mode: CompilerMode = "gemma_vision") -> StoryC
     cleaned = text.strip()
     if not cleaned:
         raise StoryCompilerError("No readable text was produced from the submitted input.")
+    return _story_from_plain_text(
+        cleaned,
+        mode=mode,
+        layout_notes="Text input bypassed image story compilation.",
+        warnings=[],
+    )
+
+
+def _story_from_plain_text(
+    text: str,
+    *,
+    mode: CompilerMode,
+    layout_notes: str,
+    warnings: list[str],
+) -> StoryCompilation:
     return StoryCompilation(
         title=None,
-        spoken_script=cleaned,
+        spoken_script=text,
         beats=[
             {
                 "beat_id": "text-1",
                 "kind": "text",
-                "narration": cleaned,
-                "source_text": cleaned,
+                "narration": text,
+                "source_text": text,
                 "layout_region": None,
                 "confidence": 1.0,
             }
@@ -118,11 +233,154 @@ def story_from_text(text: str, *, mode: CompilerMode = "gemma_vision") -> StoryC
         caregiver_cues=[],
         diagnostics={
             "mode": mode,
-            "layout_notes": "Text input bypassed image story compilation.",
+            "layout_notes": layout_notes,
             "ocr_used": False,
-            "warnings": [],
+            "warnings": warnings,
         },
     )
+
+
+def _parse_story_json(raw: str) -> StoryCompilation:
+    candidates = _json_candidates(raw)
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            return StoryCompilation.model_validate_json(candidate)
+        except (ValidationError, ValueError) as exc:
+            last_error = exc
+            repaired = _repair_json_text(candidate)
+            if repaired == candidate:
+                continue
+            try:
+                return StoryCompilation.model_validate_json(repaired)
+            except (ValidationError, ValueError) as repaired_exc:
+                last_error = repaired_exc
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Gemma did not return a JSON object.")
+
+
+def _json_candidates(raw: str) -> list[str]:
+    cleaned = raw.strip()
+    if not cleaned:
+        return []
+
+    candidates = [cleaned]
+
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+
+    extracted = _extract_json_object(cleaned)
+    if extracted is not None:
+        candidates.append(extracted)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            deduped.append(candidate)
+            seen.add(candidate)
+    return deduped
+
+
+def _extract_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    in_string = False
+    escaped = False
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1].strip()
+    return None
+
+
+def _repair_json_text(raw: str) -> str:
+    repaired = raw.strip()
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    repaired = repaired.replace("\ufeff", "")
+    return repaired
+
+
+def _story_from_text_like_output(raw: str, *, mode: CompilerMode) -> StoryCompilation | None:
+    text = _extract_text_like_output(raw)
+    if text is None:
+        return None
+    return _story_from_plain_text(
+        text,
+        mode=mode,
+        layout_notes="Gemma returned malformed JSON; OpenRead used a deterministic plain-text fallback.",
+        warnings=["Gemma returned malformed JSON. Used plain-text fallback for TTS."],
+    )
+
+
+def _extract_text_like_output(raw: str) -> str | None:
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+
+    for candidate in _json_candidates(cleaned):
+        repaired = _repair_json_text(candidate)
+        try:
+            payload = json.loads(repaired)
+        except json.JSONDecodeError:
+            continue
+        text = _find_text_value(payload)
+        if text:
+            return text
+
+    if "{" in cleaned or "}" in cleaned:
+        return None
+    lines = [_clean_text_line(line) for line in cleaned.splitlines()]
+    text = " ".join(line for line in lines if line)
+    if not text:
+        return None
+    return text[:4000]
+
+
+def _clean_text_line(line: str) -> str:
+    cleaned = line.strip()
+    cleaned = re.sub(r"^(?:[-•]\s*|\d+[.)]\s*)", "", cleaned)
+    return cleaned.strip()
+
+
+def _find_text_value(value: object) -> str | None:
+    if isinstance(value, dict):
+        for key in ("spoken_script", "narration", "source_text", "text", "content"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        for item in value.values():
+            found = _find_text_value(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        parts = [_find_text_value(item) for item in value]
+        joined = " ".join(part for part in parts if part)
+        if joined:
+            return joined.strip()
+    elif isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _validated_compilation(compiled: StoryCompilation, *, expected_mode: CompilerMode) -> StoryCompilation:
@@ -170,6 +428,9 @@ Task:
 - Briefly narrate meaningful illustrations only when they help a child understand the page.
 - Keep caregiver co-reading cues separate from the child-facing spoken script.
 - Return only JSON matching the provided schema.
+- Preserve apostrophes, quotation marks, curly quotes, dashes, ellipses, CJK punctuation, and symbols as valid JSON string content.
+- Escape every double quote inside `spoken_script`, `narration`, `source_text`, and `cue` values so the response remains parseable JSON.
+- Do not wrap JSON in markdown fences, commentary, or explanatory text.
 
 Mode: {mode}
 Language hint: {lang_hint or "bilingual"}

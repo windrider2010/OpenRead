@@ -24,6 +24,7 @@ from app.models import (
     ReadResponse,
     StoryCompilation,
 )
+from app.services.gemma_diagnostics import GemmaDiagnosticsStore
 from app.services.image_pipeline import ImageValidationError, normalize_uploaded_image
 from app.services.media_store import MediaStore
 from app.services.ocr_service import OcrService, PaddleOcrService
@@ -68,6 +69,7 @@ class ReadJob:
     input_text: str | None = None
     lang_hint: str | None = None
     compiler_mode: CompilerMode = "gemma_vision"
+    client_ip: str | None = None
     text: str | None = None
     story: StoryCompilation | None = None
     mime_type: str | None = None
@@ -93,6 +95,7 @@ class ReadJobManager:
         text: str | None,
         lang_hint: str | None,
         compiler_mode: CompilerMode,
+        client_ip: str | None,
     ) -> ReadJob:
         now = datetime.now(UTC)
         job = ReadJob(
@@ -105,6 +108,7 @@ class ReadJobManager:
             input_text=text,
             lang_hint=lang_hint,
             compiler_mode=compiler_mode,
+            client_ip=client_ip,
         )
         with self._lock:
             self._jobs[job.request_id] = job
@@ -183,6 +187,7 @@ class ReadJobManager:
             input_text = job.input_text
             lang_hint = job.lang_hint
             compiler_mode = job.compiler_mode
+            client_ip = job.client_ip
 
         try:
             if image is not None:
@@ -191,7 +196,7 @@ class ReadJobManager:
                     if compiling_job is not None:
                         compiling_job.stage = "story_compile"
                         compiling_job.updated_at = datetime.now(UTC)
-                story = await _compile_story_for_image(app, image, compiler_mode, lang_hint)
+                story = await _compile_story_for_image(app, image, compiler_mode, lang_hint, request_id, client_ip)
                 source_text = story.spoken_script
             else:
                 story = story_from_text(input_text or "", mode=compiler_mode)
@@ -277,6 +282,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.media_store.cleanup_expired()
         app.state.media_store.cleanup_to_size_limit()
+        app.state.gemma_diagnostics_store.cleanup_expired()
         app.state.read_job_manager.cleanup_expired()
         await app.state.read_job_manager.start(app)
         if app.state.settings.preload_models:
@@ -300,9 +306,16 @@ def create_app(
         enable_hpi=settings.paddle_enable_hpi,
         cpu_threads=settings.paddle_cpu_threads,
     )
+    app.state.gemma_diagnostics_store = GemmaDiagnosticsStore(
+        settings.gemma_diagnostics_root,
+        ttl_seconds=settings.openread_gemma_log_ttl_seconds,
+        log_failures=settings.openread_log_gemma_failures,
+        log_successes=settings.openread_log_gemma_successes,
+    )
     app.state.story_compiler_service = story_compiler_service or GemmaStoryCompilerService(
         api_key=settings.gemini_api_key,
         model=settings.gemma_model,
+        diagnostics_recorder=app.state.gemma_diagnostics_store,
     )
     app.state.tts_service = tts_service or KokoroTtsService(
         default_en_voice=settings.default_en_voice,
@@ -375,10 +388,18 @@ def create_app(
 
         try:
             request_id = uuid.uuid4().hex
+            client_ip = _client_ip(request)
             story = None
             if image is not None:
                 normalized = await _read_and_normalize_upload(image, app)
-                story = await _compile_story_for_image(app, normalized.image, resolved_compiler_mode, lang_hint)
+                story = await _compile_story_for_image(
+                    app,
+                    normalized.image,
+                    resolved_compiler_mode,
+                    lang_hint,
+                    request_id,
+                    client_ip,
+                )
                 source_text = story.spoken_script
             else:
                 source_text = (text or "").strip()
@@ -426,6 +447,7 @@ def create_app(
 
     @app.post("/api/read/jobs", response_model=ReadJobAcceptedResponse, status_code=202)
     async def start_read_job(
+        request: Request,
         image: UploadFile | None = File(None),
         text: str | None = Form(None),
         lang_hint: str | None = Form(None),
@@ -458,6 +480,7 @@ def create_app(
             text=input_text,
             lang_hint=lang_hint,
             compiler_mode=resolved_compiler_mode,
+            client_ip=_client_ip(request),
         )
         await app.state.read_job_manager.enqueue(job.request_id)
         return ReadJobAcceptedResponse(request_id=job.request_id, status=job.status)
@@ -500,6 +523,8 @@ async def _compile_story_for_image(
     image: object,
     compiler_mode: CompilerMode,
     lang_hint: str | None,
+    request_id: str,
+    client_ip: str | None,
 ) -> StoryCompilation:
     ocr_page = None
     if compiler_mode == "ocr_assisted":
@@ -512,6 +537,8 @@ async def _compile_story_for_image(
                 mode=compiler_mode,
                 lang_hint=lang_hint,
                 ocr_page=ocr_page,
+                request_id=request_id,
+                client_ip=client_ip,
             ),
             timeout=app.state.settings.story_compiler_timeout_seconds,
         )
@@ -531,6 +558,20 @@ async def _read_and_normalize_upload(upload: UploadFile, app: FastAPI):
         )
     except ImageValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        first = forwarded_for.split(",", 1)[0].strip()
+        if first:
+            return first
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip() or None
+    if request.client is not None:
+        return request.client.host
+    return None
 
 
 def _register_spa_routes(app: FastAPI) -> None:
@@ -566,21 +607,25 @@ async def _media_cleanup_loop(app: FastAPI) -> None:
         try:
             app.state.media_store.cleanup_expired()
             app.state.media_store.cleanup_to_size_limit()
+            app.state.gemma_diagnostics_store.cleanup_expired()
             app.state.read_job_manager.cleanup_expired()
         except Exception:
             logger.exception("Background media cleanup failed")
 
 
 def _preload_runtime_dependencies(app: FastAPI) -> None:
-    ocr_service = app.state.ocr_service
-    preload_ocr = getattr(ocr_service, "preload", None)
-    if callable(preload_ocr):
-        preload_ocr()
+    settings = app.state.settings
+    if settings.preload_ocr:
+        ocr_service = app.state.ocr_service
+        preload_ocr = getattr(ocr_service, "preload", None)
+        if callable(preload_ocr):
+            preload_ocr()
 
-    tts_service = app.state.tts_service
-    preload_tts = getattr(tts_service, "preload", None)
-    if callable(preload_tts):
-        preload_tts()
+    if settings.preload_tts:
+        tts_service = app.state.tts_service
+        preload_tts = getattr(tts_service, "preload", None)
+        if callable(preload_tts):
+            preload_tts()
 
 
 app = create_app()

@@ -20,6 +20,8 @@ Endpoint notes:
 - Completed image jobs include a `story` payload with ordered story beats, caregiver cues, compiler diagnostics, and the `spoken_script` used for TTS.
 - Generated audio is served from `/media/audio/{request_id}` as 24 kHz WAV until the media TTL expires or disk-budget cleanup removes it.
 - `lang_hint=en` selects PaddleOCR English. Other values, including `bilingual` and `zh`, select PaddleOCR Chinese for mixed Chinese/English target pages.
+- Raw Gemma text outputs and validation diagnostics are temporarily written to `backend/var/diagnostics/gemma/{request_id}.json` when image story compilation runs. These diagnostics include client IP for abuse investigation but do not include uploaded images.
+- `PRELOAD_MODELS=1` enables startup preload; `PRELOAD_TTS=1` warms Kokoro, while `PRELOAD_OCR=0` keeps PaddleOCR lazy-loaded by default.
 
 Diagnostics:
 

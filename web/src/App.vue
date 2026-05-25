@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import OpenReadIntro from './components/OpenReadIntro.vue'
 import { submitReadRequest, type ReadJobProgressPayload, type StoryCompilation } from './lib/api'
 import { captureVideoFrame } from './lib/capture'
 import { attemptPlayback } from './lib/playback'
@@ -21,6 +22,14 @@ const audioUrl = ref('')
 const story = ref<StoryCompilation | null>(null)
 const paragraphsTotal = ref(0)
 const paragraphsCompleted = ref(0)
+const currentPath = ref(normalizeRoutePath(window.location.pathname))
+
+const activeRoute = computed(() => {
+  if (currentPath.value === '/openread') {
+    return 'intro'
+  }
+  return 'reader'
+})
 
 const mainButtonLabel = computed(() => {
   if (requestingCamera.value) {
@@ -47,7 +56,7 @@ const progressLabel = computed(() => {
     return `${paragraphsCompleted.value}/${paragraphsTotal.value} audio parts`
   }
   if (audioUrl.value) {
-    return 'Audio ready'
+    return needsManualPlay.value ? 'Tap to begin' : 'Ready to read'
   }
   if (isSubmitting.value) {
     return 'Understanding page'
@@ -196,11 +205,61 @@ function stopStream() {
   cameraReady.value = false
 }
 
-onBeforeUnmount(stopStream)
+function normalizeRoutePath(path: string) {
+  const normalized = path.replace(/\/+$/, '') || '/'
+  if (
+    normalized === '/openread/demo' ||
+    normalized === '/demo/openread-cinematic.html' ||
+    normalized === '/demo/openread-cinematic'
+  ) {
+    return '/openread'
+  }
+  return normalized.toLowerCase()
+}
+
+function syncRoute() {
+  currentPath.value = normalizeRoutePath(window.location.pathname)
+  applyRouteSideEffects()
+}
+
+function navigateTo(path: string) {
+  const normalized = normalizeRoutePath(path)
+  if (currentPath.value !== normalized) {
+    window.history.pushState({}, '', path)
+  }
+  currentPath.value = normalized
+  applyRouteSideEffects()
+  window.scrollTo(0, 0)
+}
+
+function applyRouteSideEffects() {
+  if (window.location.pathname !== currentPath.value && currentPath.value === '/openread') {
+    window.history.replaceState({}, '', currentPath.value)
+  }
+  if (activeRoute.value !== 'reader') {
+    stopStream()
+  }
+  if (activeRoute.value === 'intro') {
+    document.title = 'OpenRead | Picture-book read-aloud'
+    return
+  }
+  document.title = 'OpenRead'
+}
+
+onMounted(() => {
+  applyRouteSideEffects()
+  window.addEventListener('popstate', syncRoute)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('popstate', syncRoute)
+  stopStream()
+})
 </script>
 
 <template>
-  <main class="reader-shell">
+  <OpenReadIntro v-if="activeRoute === 'intro'" @navigate="navigateTo" />
+  <main v-else class="reader-shell">
     <section class="reader-screen" aria-label="OpenRead">
       <header class="reader-header">
         <h1 class="brand-mark">OPENREAD</h1>
@@ -262,6 +321,17 @@ onBeforeUnmount(stopStream)
           {{ spokenText }}
         </div>
 
+        <button
+          v-if="needsManualPlay"
+          class="start-reading-action"
+          type="button"
+          aria-label="Start reading the story aloud"
+          @click="playAudio"
+        >
+          <span>Start Reading</span>
+          <small>Tap once to hear the story.</small>
+        </button>
+
         <audio
           v-if="audioUrl"
           ref="audioRef"
@@ -270,9 +340,6 @@ onBeforeUnmount(stopStream)
           :src="audioUrl"
           :aria-label="`Audio for ${storyTitle}`"
         ></audio>
-        <button v-if="needsManualPlay" class="secondary-action" type="button" @click="playAudio">
-          Play Audio
-        </button>
 
         <div v-if="storyBeats.length" class="story-section">
           <h2>Reading Order</h2>

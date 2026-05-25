@@ -89,6 +89,7 @@ async function capturePage(wrapper: ReturnType<typeof mount>) {
 describe('App', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.history.pushState({}, '', '/')
     Object.defineProperty(globalThis.navigator, 'mediaDevices', {
       value: { getUserMedia },
       configurable: true,
@@ -106,6 +107,45 @@ describe('App', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('renders the parent-child intro route', () => {
+    window.history.pushState({}, '', '/openread')
+
+    const wrapper = mount(App)
+
+    expect(wrapper.text()).toContain('OpenRead helps keep story time going')
+    expect(wrapper.text()).toContain('Privacy first')
+    expect(wrapper.text()).toContain('No account needed')
+    expect(wrapper.text()).toContain('Zero page-photo retention')
+    expect(wrapper.text()).toContain('Parent trust')
+    expect(wrapper.text()).toContain('Watch Intro Video')
+    expect(wrapper.text()).toContain('Video introduction')
+    expect(wrapper.text()).toContain('Language moments are not equally easy for every family')
+    expect(wrapper.text()).toContain('No menus. No setup.')
+    expect(wrapper.text()).toContain('Natural story order.')
+    expect(wrapper.get('iframe[title="OpenRead video introduction"]').attributes('src')).toContain(
+      'youtube-nocookie.com/embed/4U14vyYP_Ck',
+    )
+    expect(wrapper.text()).toContain('Open the Reader')
+  })
+
+  it('redirects the removed demo route to the intro page', () => {
+    window.history.pushState({}, '', '/openread/demo')
+
+    const wrapper = mount(App)
+
+    expect(window.location.pathname).toBe('/openread')
+    expect(wrapper.text()).toContain('OpenRead helps keep story time going')
+  })
+
+  it('redirects the old static demo URL to the intro page', () => {
+    window.history.pushState({}, '', '/demo/openread-cinematic.html')
+
+    const wrapper = mount(App)
+
+    expect(window.location.pathname).toBe('/openread')
+    expect(wrapper.text()).toContain('OpenRead helps keep story time going')
   })
 
   it('shows an error when camera APIs are unavailable', async () => {
@@ -236,7 +276,7 @@ describe('App', () => {
     await flushPromises()
   })
 
-  it('shows a manual play button when autoplay is rejected', async () => {
+  it('shows a start reading button when autoplay is rejected', async () => {
     vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
     vi.mocked(submitReadRequest).mockResolvedValue(sampleReadPayload)
     vi.mocked(attemptPlayback).mockResolvedValue(true)
@@ -245,8 +285,9 @@ describe('App', () => {
     await openCamera(wrapper)
     await capturePage(wrapper)
 
-    expect(wrapper.text()).toContain('Audio is ready')
-    expect(wrapper.text()).toContain('Play Audio')
+    expect(wrapper.text()).toContain('Tap to begin')
+    expect(wrapper.text()).toContain('Start Reading')
+    expect(wrapper.text()).toContain('Tap once to hear the story.')
     expect(wrapper.get('[data-testid="story-text"]').text()).toContain('hello world')
   })
 })
