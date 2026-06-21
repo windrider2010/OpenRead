@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 CompilerMode = Literal["gemma_vision", "ocr_assisted"]
 ReadJobStage = Literal["queued", "story_compile", "ocr", "tts", "completed", "failed"]
+WordJobStage = Literal["queued", "word_detect", "tts", "completed", "failed"]
 
 
 class OcrBlock(BaseModel):
@@ -47,6 +48,46 @@ class ReadJobStatusResponse(BaseModel):
     paragraphs_completed: int = 0
     error: str | None = None
     story: "StoryCompilation | None" = None
+
+
+class WordJobAcceptedResponse(BaseModel):
+    request_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+
+
+class WordExplorerDiagnostics(BaseModel):
+    mode: Literal["gemma_vision"] = "gemma_vision"
+    pointing_evidence: str
+    layout_region: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WordExplorerResult(BaseModel):
+    selected_word: str
+    normalized_word: str | None = None
+    language: str | None = None
+    part_of_speech: str | None = None
+    pronunciation_hint: str | None = None
+    kid_explanation: str
+    example_sentence: str | None = None
+    page_context: str | None = None
+    spoken_script: str
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: WordExplorerDiagnostics
+
+
+class WordJobStatusResponse(BaseModel):
+    request_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    stage: WordJobStage
+    word: WordExplorerResult | None = None
+    text: str | None = None
+    audio_url: str | None = None
+    mime_type: str | None = None
+    expires_at: str | None = None
+    paragraphs_total: int = 0
+    paragraphs_completed: int = 0
+    error: str | None = None
 
 
 class StoryBeat(BaseModel):

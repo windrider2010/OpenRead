@@ -10,10 +10,11 @@ from PIL import Image
 
 from app.config import Settings
 from app.main import create_app
-from app.models import CompilerMode, StoryCompilation
+from app.models import CompilerMode, StoryCompilation, WordExplorerResult
 from app.services.media_store import MediaStore
 from app.services.ocr_service import RecognizedBlock, RecognizedPage
 from app.services.tts_service import SynthesizedAudio
+from app.services.word_explorer import WordExplorerError
 
 
 class FakeOcrService:
@@ -98,6 +99,29 @@ class FakeStoryCompilerService:
         return _sample_story(mode=mode, ocr_used=ocr_page is not None)
 
 
+class FakeWordExplorerService:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls = 0
+        self.request_ids: list[str | None] = []
+        self.client_ips: list[str | None] = []
+
+    def explore_word(
+        self,
+        *,
+        image: Image.Image,
+        lang_hint: str | None = None,
+        request_id: str | None = None,
+        client_ip: str | None = None,
+    ) -> WordExplorerResult:
+        self.calls += 1
+        self.request_ids.append(request_id)
+        self.client_ips.append(client_ip)
+        if self.error is not None:
+            raise self.error
+        return _sample_word()
+
+
 def _sample_story(*, mode: CompilerMode = "gemma_vision", ocr_used: bool = False) -> StoryCompilation:
     return StoryCompilation(
         title="Moon Page",
@@ -137,11 +161,36 @@ def _sample_story(*, mode: CompilerMode = "gemma_vision", ocr_used: bool = False
     )
 
 
+def _sample_word() -> WordExplorerResult:
+    return WordExplorerResult(
+        selected_word="brave",
+        normalized_word="brave",
+        language="English",
+        part_of_speech="describing word",
+        pronunciation_hint="brayv",
+        kid_explanation="Brave means you try even when something feels a little scary.",
+        example_sentence="The brave rabbit hopped across the bridge.",
+        page_context="The pen points to the word in the sentence near the fox.",
+        spoken_script=(
+            "The word is brave. Brave means you try even when something feels a little scary. "
+            "The brave rabbit hopped across the bridge."
+        ),
+        confidence=0.92,
+        diagnostics={
+            "mode": "gemma_vision",
+            "pointing_evidence": "The pen tip touches the word brave near the center of the page.",
+            "layout_region": "center",
+            "warnings": [],
+        },
+    )
+
+
 def _make_client(tmp_path: Path, *, settings: Settings | None = None) -> TestClient:
     app = create_app(
         settings=settings,
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -164,6 +213,17 @@ def _wait_for_job_completion(client: TestClient, request_id: str) -> dict:
             return payload
         time.sleep(0.01)
     raise AssertionError(f"Timed out waiting for read job {request_id}")
+
+
+def _wait_for_word_job_completion(client: TestClient, request_id: str) -> dict:
+    for _ in range(50):
+        response = client.get(f"/api/word/jobs/{request_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for word job {request_id}")
 
 
 def test_ocr_endpoint_returns_text_and_blocks(tmp_path: Path) -> None:
@@ -212,6 +272,7 @@ def test_read_endpoint_passes_request_id_and_forwarded_ip_to_compiler(tmp_path: 
     app = create_app(
         ocr_service=FakeOcrService(),
         story_compiler_service=compiler,
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -233,6 +294,7 @@ def test_read_endpoint_sends_only_spoken_script_to_tts(tmp_path: Path) -> None:
     app = create_app(
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -288,6 +350,7 @@ def test_read_job_endpoint_surfaces_story_before_audio_completion(tmp_path: Path
     app = create_app(
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=blocking_tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -323,6 +386,7 @@ def test_read_job_endpoint_ocr_assisted_mode_invokes_ocr_before_compiler(tmp_pat
     app = create_app(
         ocr_service=ocr,
         story_compiler_service=compiler,
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -364,10 +428,69 @@ def test_audio_asset_endpoint_serves_cached_wav(tmp_path: Path) -> None:
     assert response.content == b"RIFFfakewav"
 
 
+def test_word_job_endpoint_returns_completed_status_audio_url_and_word(tmp_path: Path) -> None:
+    word_service = FakeWordExplorerService()
+    tts = FakeTtsService()
+    app = create_app(
+        ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=word_service,
+        tts_service=tts,
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/word/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+            data={"lang_hint": "bilingual"},
+            headers={"x-forwarded-for": "203.0.113.45, 10.0.0.1"},
+        )
+        assert start_response.status_code == 202
+        request_id = start_response.json()["request_id"]
+        payload = _wait_for_word_job_completion(client, request_id)
+
+    assert payload["status"] == "completed"
+    assert payload["stage"] == "completed"
+    assert payload["audio_url"].endswith(f"/media/audio/{request_id}")
+    assert payload["word"]["selected_word"] == "brave"
+    assert payload["word"]["kid_explanation"].startswith("Brave means")
+    assert payload["paragraphs_total"] >= 1
+    assert payload["paragraphs_completed"] == payload["paragraphs_total"]
+    assert tts.calls == [_sample_word().spoken_script]
+    assert "pointing_evidence" not in tts.calls[0]
+    assert word_service.request_ids == [request_id]
+    assert word_service.client_ips == ["203.0.113.45"]
+    assert app.state.word_job_manager.get_job(request_id).image is None
+
+
+def test_word_job_endpoint_fails_cleanly_when_pointer_is_unclear(tmp_path: Path) -> None:
+    app = create_app(
+        ocr_service=FakeOcrService(),
+        story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(error=WordExplorerError("OpenRead could not tell which word the pen was pointing to.")),
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/word/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        )
+        assert start_response.status_code == 202
+        payload = _wait_for_word_job_completion(client, start_response.json()["request_id"])
+
+    assert payload["status"] == "failed"
+    assert payload["stage"] == "failed"
+    assert "could not tell which word" in payload["error"]
+
+
 def test_read_endpoint_returns_busy_when_gate_is_full(tmp_path: Path) -> None:
     app = create_app(
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -394,6 +517,7 @@ def test_app_preloads_only_tts_by_default_when_enabled(tmp_path: Path) -> None:
         settings=settings,
         ocr_service=ocr,
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -411,6 +535,7 @@ def test_app_can_preload_ocr_when_enabled(tmp_path: Path) -> None:
         settings=settings,
         ocr_service=ocr,
         story_compiler_service=FakeStoryCompilerService(),
+        word_explorer_service=FakeWordExplorerService(),
         tts_service=tts,
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )

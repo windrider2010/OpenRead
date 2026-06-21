@@ -214,6 +214,54 @@ function go(path: string) {
       </div>
     </section>
 
+    <section class="intro-section position-band" aria-labelledby="position-title">
+      <div class="section-copy">
+        <p class="section-label">What is different</p>
+        <h2 id="position-title">The gap is the family reading workflow.</h2>
+        <p>
+          There are already powerful OCR tools, AI chatbots, accessibility apps, and reading toys. OpenRead is not
+          claiming that OCR or TTS is new. Existing tools are often general-purpose, closed, account-based,
+          hardware-bound, tutoring-focused, or not designed for the moment when a caregiver simply wants to turn one
+          printed page into spoken language without friction.
+        </p>
+        <p>
+          OpenRead focuses on that narrow but common moment: no prompt engineering, no toy hardware, no account
+          requirement, no content lock-in, and no long-term storage by default. The goal is a simple, open,
+          self-hostable reading layer for families, libraries, schools, and caregivers.
+        </p>
+      </div>
+      <div class="differentiator-grid" aria-label="OpenRead key differentiation">
+        <article>
+          <strong>One-button</strong>
+          <span>not prompt-based</span>
+        </article>
+        <article>
+          <strong>Web-first</strong>
+          <span>not hardware-bound</span>
+        </article>
+        <article>
+          <strong>Open-source</strong>
+          <span>not a closed ecosystem</span>
+        </article>
+        <article>
+          <strong>Stateless</strong>
+          <span>not account-driven</span>
+        </article>
+        <article>
+          <strong>Story-aware</strong>
+          <span>not OCR-only</span>
+        </article>
+        <article>
+          <strong>Caregiver-centered</strong>
+          <span>not AI babysitting</span>
+        </article>
+      </div>
+      <p class="position-line">
+        OpenRead is not trying to be the most powerful AI reader. It is trying to be the easiest trustworthy way to
+        keep a child's page from going silent.
+      </p>
+    </section>
+
     <section class="intro-section trust-band" aria-labelledby="trust-title">
       <div class="section-copy">
         <p class="section-label">Parent trust</p>
@@ -1354,6 +1402,60 @@ function go(path: string) {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.position-band {
+  background:
+    radial-gradient(circle at 82% 12%, rgba(255, 241, 163, 0.52), transparent 24%),
+    linear-gradient(180deg, rgba(245, 234, 255, 0.96), rgba(255, 248, 237, 0.95)),
+    #f5eaff;
+}
+
+.differentiator-grid {
+  width: min(1020px, 100%);
+  margin: 28px auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.differentiator-grid article {
+  min-height: 112px;
+  padding: 18px;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  border: 1px solid rgba(83, 55, 111, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 14px 30px rgba(59, 39, 80, 0.08);
+}
+
+.differentiator-grid strong {
+  color: #251c36;
+  font-size: 1.18rem;
+  font-weight: 900;
+  line-height: 1.08;
+}
+
+.differentiator-grid span {
+  color: #675377;
+  font-size: 0.96rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.position-line {
+  width: min(920px, 100%);
+  margin: 28px auto 0;
+  padding: 22px;
+  border: 1px solid rgba(83, 55, 111, 0.16);
+  border-radius: 8px;
+  color: #2b203c;
+  background: rgba(255, 241, 163, 0.42);
+  font-size: clamp(1.2rem, 2.6vw, 1.72rem);
+  font-weight: 850;
+  line-height: 1.32;
+}
+
 .trust-band {
   background: #edf8ee;
 }
@@ -1443,6 +1545,7 @@ a:focus-visible {
 
   .flow-list,
   .comparison-visual,
+  .differentiator-grid,
   .trust-grid {
     grid-template-columns: 1fr;
   }

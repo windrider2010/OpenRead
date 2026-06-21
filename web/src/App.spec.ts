@@ -5,6 +5,7 @@ import App from './App.vue'
 
 vi.mock('./lib/api', () => ({
   submitReadRequest: vi.fn(),
+  submitWordRequest: vi.fn(),
 }))
 
 vi.mock('./lib/capture', () => ({
@@ -15,10 +16,10 @@ vi.mock('./lib/playback', () => ({
   attemptPlayback: vi.fn(),
 }))
 
-import { submitReadRequest } from './lib/api'
+import { submitReadRequest, submitWordRequest } from './lib/api'
 import { captureVideoFrame } from './lib/capture'
 import { attemptPlayback } from './lib/playback'
-import type { ReadPayload, StoryCompilation } from './lib/api'
+import type { ReadPayload, StoryCompilation, WordExplorerResult, WordPayload } from './lib/api'
 
 const getUserMedia = vi.fn()
 const stopTrack = vi.fn()
@@ -67,6 +68,35 @@ const sampleReadPayload: ReadPayload = {
   mime_type: 'audio/wav',
   expires_at: '2026-04-14T00:00:00Z',
   story: sampleStory,
+}
+
+const sampleWord: WordExplorerResult = {
+  selected_word: 'brave',
+  normalized_word: 'brave',
+  language: 'English',
+  part_of_speech: 'describing word',
+  pronunciation_hint: 'brayv',
+  kid_explanation: 'Brave means you try even when something feels a little scary.',
+  example_sentence: 'The brave rabbit hopped across the bridge.',
+  page_context: 'The pen points to the word near the rabbit.',
+  spoken_script:
+    'The word is brave. Brave means you try even when something feels a little scary. The brave rabbit hopped across the bridge.',
+  confidence: 0.92,
+  diagnostics: {
+    mode: 'gemma_vision',
+    pointing_evidence: 'The pen tip touches the word brave.',
+    layout_region: 'center',
+    warnings: [],
+  },
+}
+
+const sampleWordPayload: WordPayload = {
+  request_id: 'word-1',
+  text: sampleWord.spoken_script,
+  audio_url: '/media/audio/word-1',
+  mime_type: 'audio/wav',
+  expires_at: '2026-04-14T00:00:00Z',
+  word: sampleWord,
 }
 
 function mountAppWithCamera() {
@@ -124,6 +154,12 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Language moments are not equally easy for every family')
     expect(wrapper.text()).toContain('No menus. No setup.')
     expect(wrapper.text()).toContain('Natural story order.')
+    expect(wrapper.text()).toContain('The gap is the family reading workflow.')
+    expect(wrapper.text()).toContain('One-button')
+    expect(wrapper.text()).toContain('not prompt-based')
+    expect(wrapper.text()).toContain('Story-aware')
+    expect(wrapper.text()).toContain('not OCR-only')
+    expect(wrapper.text()).toContain("keep a child's page from going silent")
     expect(wrapper.get('iframe[title="OpenRead video introduction"]').attributes('src')).toContain(
       'youtube-nocookie.com/embed/4U14vyYP_Ck',
     )
@@ -175,6 +211,9 @@ describe('App', () => {
     vi.mocked(submitReadRequest).mockResolvedValue(sampleReadPayload)
 
     const wrapper = mountAppWithCamera()
+    expect(wrapper.text()).toContain('Read Page')
+    expect(wrapper.text()).toContain('Explore Word')
+    expect(wrapper.text()).toContain('Take a photo of one page')
     expect(wrapper.get('[data-testid="main-action"]').text()).toContain('Open Camera')
 
     await openCamera(wrapper)
@@ -182,6 +221,26 @@ describe('App', () => {
 
     await capturePage(wrapper)
     expect(submitReadRequest).toHaveBeenCalledWith(expect.any(Blob), 'bilingual', 'gemma_vision', expect.any(Function))
+    expect(submitWordRequest).not.toHaveBeenCalled()
+  })
+
+  it('switches to Explore Word and calls the word API', async () => {
+    vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
+    vi.mocked(submitWordRequest).mockResolvedValue(sampleWordPayload)
+
+    const wrapper = mountAppWithCamera()
+    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+
+    expect(wrapper.text()).toContain('Point to a word with a pen')
+
+    await openCamera(wrapper)
+    await capturePage(wrapper)
+
+    expect(submitWordRequest).toHaveBeenCalledWith(expect.any(Blob), 'auto', expect.any(Function))
+    expect(submitReadRequest).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="word-result"]').text()).toContain('brave')
+    expect(wrapper.get('[data-testid="word-explanation"]').text()).toContain('Brave means')
+    expect(wrapper.text()).toContain('The brave rabbit hopped across the bridge.')
   })
 
   it('shows a clear reading state while the request is in progress', async () => {
@@ -235,6 +294,42 @@ describe('App', () => {
     expect(wrapper.text()).toContain('Finding the story order')
 
     resolveRequest?.(sampleReadPayload)
+    await flushPromises()
+  })
+
+  it('shows word explorer progress before audio generation starts', async () => {
+    let resolveRequest: ((value: typeof sampleWordPayload) => void) | undefined
+    vi.mocked(captureVideoFrame).mockResolvedValue(new Blob(['img'], { type: 'image/jpeg' }))
+    vi.mocked(submitWordRequest).mockImplementation(
+      (_blob, _langHint, onProgress) =>
+        new Promise((resolve) => {
+          onProgress?.({
+            request_id: 'word-1',
+            status: 'processing',
+            stage: 'word_detect',
+            word: null,
+            text: null,
+            audio_url: null,
+            mime_type: null,
+            expires_at: null,
+            paragraphs_total: 0,
+            paragraphs_completed: 0,
+            error: null,
+          })
+          resolveRequest = resolve
+        }),
+    )
+
+    const wrapper = mountAppWithCamera()
+    const modeButtons = wrapper.findAll('.mode-toggle button')
+    expect(modeButtons).toHaveLength(2)
+    await modeButtons[1]!.trigger('click')
+    await openCamera(wrapper)
+    await capturePage(wrapper)
+
+    expect(wrapper.text()).toContain('Finding the word')
+
+    resolveRequest?.(sampleWordPayload)
     await flushPromises()
   })
 

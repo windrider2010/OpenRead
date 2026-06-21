@@ -23,6 +23,9 @@ from app.models import (
     ReadJobStatusResponse,
     ReadResponse,
     StoryCompilation,
+    WordExplorerResult,
+    WordJobAcceptedResponse,
+    WordJobStatusResponse,
 )
 from app.services.gemma_diagnostics import GemmaDiagnosticsStore
 from app.services.image_pipeline import ImageValidationError, normalize_uploaded_image
@@ -36,6 +39,7 @@ from app.services.story_compiler import (
     story_from_text,
 )
 from app.services.tts_service import KokoroTtsService, TtsService, synthesize_text_in_paragraphs
+from app.services.word_explorer import GemmaWordExplorerService, WordExplorerError, WordExplorerService
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,25 @@ class ReadJob:
     client_ip: str | None = None
     text: str | None = None
     story: StoryCompilation | None = None
+    mime_type: str | None = None
+    expires_at: str | None = None
+    paragraphs_total: int = 0
+    paragraphs_completed: int = 0
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class WordJob:
+    request_id: str
+    status: str
+    stage: str
+    created_at: datetime
+    updated_at: datetime
+    image: object | None = None
+    lang_hint: str | None = None
+    client_ip: str | None = None
+    word: WordExplorerResult | None = None
+    text: str | None = None
     mime_type: str | None = None
     expires_at: str | None = None
     paragraphs_total: int = 0
@@ -268,11 +291,185 @@ class ReadJobManager:
             completed_job.input_text = None
 
 
+class WordJobManager:
+    def __init__(self, *, max_workers: int, ttl_seconds: int) -> None:
+        self._max_workers = max(1, max_workers)
+        self._ttl_seconds = max(60, ttl_seconds)
+        self._jobs: dict[str, WordJob] = {}
+        self._lock = threading.Lock()
+        self._queue: asyncio.Queue[str] | None = None
+        self._workers: list[asyncio.Task[None]] = []
+
+    def create_job(
+        self,
+        *,
+        image: object,
+        lang_hint: str | None,
+        client_ip: str | None,
+    ) -> WordJob:
+        now = datetime.now(UTC)
+        job = WordJob(
+            request_id=uuid.uuid4().hex,
+            status="queued",
+            stage="queued",
+            created_at=now,
+            updated_at=now,
+            image=image,
+            lang_hint=lang_hint,
+            client_ip=client_ip,
+        )
+        with self._lock:
+            self._jobs[job.request_id] = job
+        return job
+
+    async def start(self, app: FastAPI) -> None:
+        if self._queue is not None:
+            return
+        self._queue = asyncio.Queue()
+        self._workers = [
+            asyncio.create_task(self._worker(app), name=f"word-job-worker-{index}")
+            for index in range(self._max_workers)
+        ]
+
+    async def stop(self) -> None:
+        workers = list(self._workers)
+        self._workers.clear()
+        queue = self._queue
+        self._queue = None
+        for worker in workers:
+            worker.cancel()
+        for worker in workers:
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+        if queue is not None:
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+
+    async def enqueue(self, request_id: str) -> None:
+        if self._queue is None:
+            raise RuntimeError("Word job manager has not been started.")
+        await self._queue.put(request_id)
+
+    def get_job(self, request_id: str) -> WordJob | None:
+        with self._lock:
+            return self._jobs.get(request_id)
+
+    def cleanup_expired(self) -> int:
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._ttl_seconds)
+        removed = 0
+        with self._lock:
+            expired_ids = [
+                request_id
+                for request_id, job in self._jobs.items()
+                if job.status in {"completed", "failed"} and job.updated_at <= cutoff
+            ]
+            for request_id in expired_ids:
+                self._jobs.pop(request_id, None)
+                removed += 1
+        return removed
+
+    async def _worker(self, app: FastAPI) -> None:
+        assert self._queue is not None
+        while True:
+            request_id = await self._queue.get()
+            try:
+                await self._process_job(app, request_id)
+            finally:
+                self._queue.task_done()
+
+    async def _process_job(self, app: FastAPI, request_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(request_id)
+            if job is None:
+                return
+            job.status = "processing"
+            job.stage = "word_detect"
+            job.updated_at = datetime.now(UTC)
+            image = job.image
+            lang_hint = job.lang_hint
+            client_ip = job.client_ip
+
+        try:
+            if image is None:
+                raise ValueError("Word Explorer requires an image.")
+            word = await _explore_word_for_image(app, image, lang_hint, request_id, client_ip)
+            source_text = word.spoken_script
+            if not source_text:
+                raise ValueError("No word explanation was produced from the submitted input.")
+            max_text_chars = app.state.settings.max_text_chars
+            if len(source_text) > max_text_chars:
+                raise ValueError(f"Text exceeds the {max_text_chars} character limit.")
+
+            with self._lock:
+                tts_job = self._jobs.get(request_id)
+                if tts_job is not None:
+                    tts_job.word = word
+                    tts_job.text = source_text
+                    tts_job.stage = "tts"
+                    tts_job.updated_at = datetime.now(UTC)
+
+            def on_tts_progress(completed: int, total: int) -> None:
+                with self._lock:
+                    progress_job = self._jobs.get(request_id)
+                    if progress_job is None:
+                        return
+                    progress_job.status = "processing"
+                    progress_job.stage = "tts"
+                    progress_job.paragraphs_total = total
+                    progress_job.paragraphs_completed = completed
+                    progress_job.updated_at = datetime.now(UTC)
+
+            audio = await asyncio.to_thread(
+                synthesize_text_in_paragraphs,
+                app.state.tts_service,
+                source_text,
+                lang_hint,
+                progress_callback=on_tts_progress,
+            )
+            asset = app.state.media_store.store_audio(
+                request_id=request_id,
+                audio_bytes=audio.audio_bytes,
+                mime_type=audio.mime_type,
+                text=source_text,
+            )
+        except Exception as exc:
+            logger.exception("Word job %s failed", request_id)
+            with self._lock:
+                failed_job = self._jobs.get(request_id)
+                if failed_job is not None:
+                    failed_job.status = "failed"
+                    failed_job.stage = "failed"
+                    failed_job.error = str(exc)
+                    failed_job.updated_at = datetime.now(UTC)
+                    failed_job.image = None
+            return
+
+        with self._lock:
+            completed_job = self._jobs.get(request_id)
+            if completed_job is None:
+                return
+            completed_job.status = "completed"
+            completed_job.stage = "completed"
+            completed_job.updated_at = datetime.now(UTC)
+            completed_job.word = word
+            completed_job.text = source_text
+            completed_job.mime_type = audio.mime_type
+            completed_job.expires_at = asset.expires_at
+            completed_job.image = None
+
+
 def create_app(
     *,
     settings=None,
     ocr_service: OcrService | None = None,
     story_compiler_service: StoryCompilerService | None = None,
+    word_explorer_service: WordExplorerService | None = None,
     tts_service: TtsService | None = None,
     media_store: MediaStore | None = None,
 ) -> FastAPI:
@@ -284,7 +481,9 @@ def create_app(
         app.state.media_store.cleanup_to_size_limit()
         app.state.gemma_diagnostics_store.cleanup_expired()
         app.state.read_job_manager.cleanup_expired()
+        app.state.word_job_manager.cleanup_expired()
         await app.state.read_job_manager.start(app)
+        await app.state.word_job_manager.start(app)
         if app.state.settings.preload_models:
             await asyncio.to_thread(_preload_runtime_dependencies, app)
         cleanup_task = asyncio.create_task(_media_cleanup_loop(app))
@@ -297,6 +496,7 @@ def create_app(
             except asyncio.CancelledError:
                 pass
             await app.state.read_job_manager.stop()
+            await app.state.word_job_manager.stop()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
@@ -317,6 +517,11 @@ def create_app(
         model=settings.gemma_model,
         diagnostics_recorder=app.state.gemma_diagnostics_store,
     )
+    app.state.word_explorer_service = word_explorer_service or GemmaWordExplorerService(
+        api_key=settings.gemini_api_key,
+        model=settings.gemma_model,
+        diagnostics_recorder=app.state.gemma_diagnostics_store,
+    )
     app.state.tts_service = tts_service or KokoroTtsService(
         default_en_voice=settings.default_en_voice,
         default_zh_voice=settings.default_zh_voice,
@@ -331,6 +536,10 @@ def create_app(
     )
     app.state.read_gate = ReadConcurrencyGate(settings.max_active_reads)
     app.state.read_job_manager = ReadJobManager(
+        max_workers=settings.max_active_reads,
+        ttl_seconds=settings.media_ttl_seconds,
+    )
+    app.state.word_job_manager = WordJobManager(
         max_workers=settings.max_active_reads,
         ttl_seconds=settings.media_ttl_seconds,
     )
@@ -507,6 +716,43 @@ def create_app(
             story=job.story,
         )
 
+    @app.post("/api/word/jobs", response_model=WordJobAcceptedResponse, status_code=202)
+    async def start_word_job(
+        request: Request,
+        image: UploadFile = File(...),
+        lang_hint: str | None = Form(None),
+    ) -> WordJobAcceptedResponse:
+        normalized = await _read_and_normalize_upload(image, app)
+        job = app.state.word_job_manager.create_job(
+            image=normalized.image,
+            lang_hint=lang_hint,
+            client_ip=_client_ip(request),
+        )
+        await app.state.word_job_manager.enqueue(job.request_id)
+        return WordJobAcceptedResponse(request_id=job.request_id, status=job.status)
+
+    @app.get("/api/word/jobs/{request_id}", response_model=WordJobStatusResponse)
+    async def get_word_job(request: Request, request_id: str) -> WordJobStatusResponse:
+        job = app.state.word_job_manager.get_job(request_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Word job not found or expired.")
+        audio_url = None
+        if job.status == "completed":
+            audio_url = str(request.url_for("get_audio_asset", request_id=request_id))
+        return WordJobStatusResponse(
+            request_id=job.request_id,
+            status=job.status,  # type: ignore[arg-type]
+            stage=job.stage,  # type: ignore[arg-type]
+            word=job.word,
+            text=job.text,
+            audio_url=audio_url,
+            mime_type=job.mime_type,
+            expires_at=job.expires_at,
+            paragraphs_total=job.paragraphs_total,
+            paragraphs_completed=job.paragraphs_completed,
+            error=job.error,
+        )
+
     @app.get("/media/audio/{request_id}", name="get_audio_asset")
     async def get_audio_asset(request_id: str) -> FileResponse:
         asset = app.state.media_store.get_asset(request_id)
@@ -544,6 +790,28 @@ async def _compile_story_for_image(
         )
     except asyncio.TimeoutError as exc:
         raise StoryCompilerError("OpenRead story compilation timed out. Try a clearer page photo.") from exc
+
+
+async def _explore_word_for_image(
+    app: FastAPI,
+    image: object,
+    lang_hint: str | None,
+    request_id: str,
+    client_ip: str | None,
+) -> WordExplorerResult:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                app.state.word_explorer_service.explore_word,
+                image=image,
+                lang_hint=lang_hint,
+                request_id=request_id,
+                client_ip=client_ip,
+            ),
+            timeout=app.state.settings.story_compiler_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise WordExplorerError("OpenRead word exploration timed out. Try a closer photo.") from exc
 
 
 async def _read_and_normalize_upload(upload: UploadFile, app: FastAPI):
@@ -609,6 +877,7 @@ async def _media_cleanup_loop(app: FastAPI) -> None:
             app.state.media_store.cleanup_to_size_limit()
             app.state.gemma_diagnostics_store.cleanup_expired()
             app.state.read_job_manager.cleanup_expired()
+            app.state.word_job_manager.cleanup_expired()
         except Exception:
             logger.exception("Background media cleanup failed")
 

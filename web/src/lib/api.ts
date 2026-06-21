@@ -1,6 +1,7 @@
 export type CompilerMode = 'gemma_vision' | 'ocr_assisted'
 export type StoryBeatKind = 'text' | 'illustration'
 export type CaregiverCuePurpose = 'prediction' | 'emotion' | 'vocabulary' | 'engagement'
+export type ReaderMode = 'read_page' | 'explore_word'
 
 export interface StoryBeat {
   beat_id: string
@@ -61,6 +62,55 @@ export interface ReadJobProgressPayload {
   story: StoryCompilation | null
 }
 
+export interface WordExplorerDiagnostics {
+  mode: 'gemma_vision'
+  pointing_evidence: string
+  layout_region: string | null
+  warnings: string[]
+}
+
+export interface WordExplorerResult {
+  selected_word: string
+  normalized_word: string | null
+  language: string | null
+  part_of_speech: string | null
+  pronunciation_hint: string | null
+  kid_explanation: string
+  example_sentence: string | null
+  page_context: string | null
+  spoken_script: string
+  confidence: number
+  diagnostics: WordExplorerDiagnostics
+}
+
+export interface WordPayload {
+  request_id: string
+  text: string
+  audio_url: string
+  mime_type: string
+  expires_at: string
+  word: WordExplorerResult
+}
+
+interface WordJobAcceptedPayload {
+  request_id: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+}
+
+export interface WordJobProgressPayload {
+  request_id: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  stage: 'queued' | 'word_detect' | 'tts' | 'completed' | 'failed'
+  word: WordExplorerResult | null
+  text: string | null
+  audio_url: string | null
+  mime_type: string | null
+  expires_at: string | null
+  paragraphs_total: number
+  paragraphs_completed: number
+  error: string | null
+}
+
 const JOB_POLL_INTERVAL_MS = 1500
 
 export async function submitReadRequest(
@@ -85,6 +135,28 @@ export async function submitReadRequest(
 
   const payload = (await response.json()) as ReadJobAcceptedPayload
   return waitForReadJob(payload.request_id, onProgress)
+}
+
+export async function submitWordRequest(
+  blob: Blob,
+  langHint = 'auto',
+  onProgress?: (progress: WordJobProgressPayload) => void,
+): Promise<WordPayload> {
+  const formData = new FormData()
+  formData.append('image', blob, 'page.jpg')
+  formData.append('lang_hint', langHint)
+
+  const response = await fetch('/api/word/jobs', {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Word lookup failed.'))
+  }
+
+  const payload = (await response.json()) as WordJobAcceptedPayload
+  return waitForWordJob(payload.request_id, onProgress)
 }
 
 async function waitForReadJob(
@@ -116,6 +188,41 @@ async function waitForReadJob(
 
     if (payload.status === 'failed') {
       throw new Error(payload.error || 'Read job failed.')
+    }
+
+    await delay(JOB_POLL_INTERVAL_MS)
+  }
+}
+
+async function waitForWordJob(
+  requestId: string,
+  onProgress?: (progress: WordJobProgressPayload) => void,
+): Promise<WordPayload> {
+  while (true) {
+    const response = await fetch(`/api/word/jobs/${requestId}`)
+    if (!response.ok) {
+      throw new Error(await getErrorMessage(response, 'Word lookup failed.'))
+    }
+
+    const payload = (await response.json()) as WordJobProgressPayload
+    onProgress?.(payload)
+
+    if (payload.status === 'completed') {
+      if (!payload.text || !payload.audio_url || !payload.mime_type || !payload.expires_at || !payload.word) {
+        throw new Error('Word job completed without returning audio metadata.')
+      }
+      return {
+        request_id: payload.request_id,
+        text: payload.text,
+        audio_url: payload.audio_url,
+        mime_type: payload.mime_type,
+        expires_at: payload.expires_at,
+        word: payload.word,
+      }
+    }
+
+    if (payload.status === 'failed') {
+      throw new Error(payload.error || 'Word lookup failed.')
     }
 
     await delay(JOB_POLL_INTERVAL_MS)

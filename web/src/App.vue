@@ -2,7 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import OpenReadIntro from './components/OpenReadIntro.vue'
-import { submitReadRequest, type ReadJobProgressPayload, type StoryCompilation } from './lib/api'
+import {
+  submitReadRequest,
+  submitWordRequest,
+  type ReaderMode,
+  type ReadJobProgressPayload,
+  type StoryCompilation,
+  type WordExplorerResult,
+  type WordJobProgressPayload,
+} from './lib/api'
 import { captureVideoFrame } from './lib/capture'
 import { attemptPlayback } from './lib/playback'
 
@@ -15,11 +23,13 @@ const requestingCamera = ref(false)
 const isSubmitting = ref(false)
 const needsManualPlay = ref(false)
 
+const readerMode = ref<ReaderMode>('read_page')
 const statusMessage = ref('Ready for a story page.')
 const errorMessage = ref('')
 const recognizedText = ref('')
 const audioUrl = ref('')
 const story = ref<StoryCompilation | null>(null)
+const wordResult = ref<WordExplorerResult | null>(null)
 const paragraphsTotal = ref(0)
 const paragraphsCompleted = ref(0)
 const currentPath = ref(normalizeRoutePath(window.location.pathname))
@@ -36,7 +46,7 @@ const mainButtonLabel = computed(() => {
     return 'Opening camera'
   }
   if (isSubmitting.value) {
-    return 'Reading page'
+    return readerMode.value === 'explore_word' ? 'Exploring word' : 'Reading page'
   }
   if (!cameraReady.value) {
     return 'Open Camera'
@@ -44,12 +54,22 @@ const mainButtonLabel = computed(() => {
   return 'Take Photo'
 })
 
-const spokenText = computed(() => story.value?.spoken_script || recognizedText.value)
-const storyTitle = computed(() => story.value?.title || 'Read Aloud')
+const spokenText = computed(() => wordResult.value?.spoken_script || story.value?.spoken_script || recognizedText.value)
+const storyTitle = computed(() => {
+  if (wordResult.value) {
+    return 'Word Explorer'
+  }
+  return story.value?.title || 'Read Aloud'
+})
 const storyBeats = computed(() => story.value?.beats ?? [])
 const caregiverCues = computed(() => story.value?.caregiver_cues ?? [])
-const hasResult = computed(() => Boolean(spokenText.value || audioUrl.value || story.value))
+const hasResult = computed(() => Boolean(spokenText.value || audioUrl.value || story.value || wordResult.value))
 const actionDisabled = computed(() => requestingCamera.value || isSubmitting.value)
+const modeHint = computed(() =>
+  readerMode.value === 'explore_word'
+    ? 'Point to a word with a pen, then take a photo.'
+    : 'Take a photo of one page for a gentle read-aloud.',
+)
 
 const progressLabel = computed(() => {
   if (isSubmitting.value && paragraphsTotal.value > 0) {
@@ -59,7 +79,7 @@ const progressLabel = computed(() => {
     return needsManualPlay.value ? 'Tap to begin' : 'Ready to read'
   }
   if (isSubmitting.value) {
-    return 'Understanding page'
+    return readerMode.value === 'explore_word' ? 'Finding word' : 'Understanding page'
   }
   return cameraReady.value ? 'Camera ready' : 'OpenRead'
 })
@@ -70,6 +90,18 @@ async function handleMainAction() {
     return
   }
   await captureAndRead()
+}
+
+function setReaderMode(mode: ReaderMode) {
+  if (readerMode.value === mode || isSubmitting.value) {
+    return
+  }
+  readerMode.value = mode
+  clearResult()
+  errorMessage.value = ''
+  needsManualPlay.value = false
+  statusMessage.value =
+    mode === 'explore_word' ? 'Point to a word with a pen.' : 'Ready for a story page.'
 }
 
 async function startCamera() {
@@ -124,22 +156,28 @@ async function captureAndRead() {
   }
 
   errorMessage.value = ''
-  recognizedText.value = ''
-  audioUrl.value = ''
-  story.value = null
+  clearResult()
   needsManualPlay.value = false
   paragraphsTotal.value = 0
   paragraphsCompleted.value = 0
   isSubmitting.value = true
-  statusMessage.value = 'Understanding the page...'
+  statusMessage.value = readerMode.value === 'explore_word' ? 'Finding the word...' : 'Understanding the page...'
 
   try {
     const image = await captureVideoFrame(video)
-    const result = await submitReadRequest(image, 'bilingual', 'gemma_vision', applyReadProgress)
-    recognizedText.value = result.text
-    story.value = result.story
-    audioUrl.value = result.audio_url
-    statusMessage.value = 'Audio is ready.'
+    if (readerMode.value === 'explore_word') {
+      const result = await submitWordRequest(image, 'auto', applyWordProgress)
+      recognizedText.value = result.text
+      wordResult.value = result.word
+      audioUrl.value = result.audio_url
+      statusMessage.value = 'Voice is ready.'
+    } else {
+      const result = await submitReadRequest(image, 'bilingual', 'gemma_vision', applyReadProgress)
+      recognizedText.value = result.text
+      story.value = result.story
+      audioUrl.value = result.audio_url
+      statusMessage.value = 'Audio is ready.'
+    }
 
     await nextTick()
     if (audioRef.value) {
@@ -151,6 +189,15 @@ async function captureAndRead() {
   } finally {
     isSubmitting.value = false
   }
+}
+
+function clearResult() {
+  recognizedText.value = ''
+  audioUrl.value = ''
+  story.value = null
+  wordResult.value = null
+  paragraphsTotal.value = 0
+  paragraphsCompleted.value = 0
 }
 
 function applyReadProgress(progress: ReadJobProgressPayload) {
@@ -186,6 +233,37 @@ function applyReadProgress(progress: ReadJobProgressPayload) {
     return
   }
   statusMessage.value = 'Waiting for the reader...'
+}
+
+function applyWordProgress(progress: WordJobProgressPayload) {
+  paragraphsTotal.value = progress.paragraphs_total
+  paragraphsCompleted.value = progress.paragraphs_completed
+
+  if (progress.text) {
+    recognizedText.value = progress.text
+  }
+  if (progress.word) {
+    wordResult.value = progress.word
+  }
+
+  if (progress.stage === 'word_detect') {
+    statusMessage.value = 'Finding the word...'
+    return
+  }
+  if (progress.stage === 'tts') {
+    statusMessage.value = 'Making the meaning speak...'
+    return
+  }
+  if (progress.stage === 'completed') {
+    statusMessage.value = 'Voice is ready.'
+    return
+  }
+  if (progress.stage === 'failed') {
+    statusMessage.value = 'Word lookup failed.'
+    errorMessage.value = progress.error || 'Word lookup failed.'
+    return
+  }
+  statusMessage.value = 'Waiting for Word Explorer...'
 }
 
 async function playAudio() {
@@ -266,7 +344,34 @@ onBeforeUnmount(() => {
         <p class="reader-subheader">When you want to read, but the moment gets in the way.</p>
       </header>
 
-      <section class="camera-window" :class="{ live: cameraReady, busy: isSubmitting, complete: hasResult }">
+      <section class="mode-panel" aria-label="OpenRead mode">
+        <div class="mode-toggle" role="group" aria-label="Choose reading mode">
+          <button
+            type="button"
+            :class="{ active: readerMode === 'read_page' }"
+            :aria-pressed="readerMode === 'read_page'"
+            :disabled="isSubmitting"
+            @click="setReaderMode('read_page')"
+          >
+            Read Page
+          </button>
+          <button
+            type="button"
+            :class="{ active: readerMode === 'explore_word' }"
+            :aria-pressed="readerMode === 'explore_word'"
+            :disabled="isSubmitting"
+            @click="setReaderMode('explore_word')"
+          >
+            Explore Word
+          </button>
+        </div>
+        <p>{{ modeHint }}</p>
+      </section>
+
+      <section
+        class="camera-window"
+        :class="{ live: cameraReady, busy: isSubmitting, complete: hasResult, 'word-mode': readerMode === 'explore_word' }"
+      >
         <video
           ref="videoRef"
           class="camera-preview"
@@ -317,7 +422,29 @@ onBeforeUnmount(() => {
           <span>{{ progressLabel }}</span>
         </div>
 
-        <div class="spoken-script" data-testid="story-text">
+        <div v-if="wordResult" class="word-result" data-testid="word-result">
+          <div>
+            <span>Word</span>
+            <strong>{{ wordResult.selected_word }}</strong>
+          </div>
+          <p data-testid="word-explanation">{{ wordResult.kid_explanation }}</p>
+          <dl>
+            <template v-if="wordResult.pronunciation_hint">
+              <dt>Say it</dt>
+              <dd>{{ wordResult.pronunciation_hint }}</dd>
+            </template>
+            <template v-if="wordResult.part_of_speech">
+              <dt>Kind</dt>
+              <dd>{{ wordResult.part_of_speech }}</dd>
+            </template>
+            <template v-if="wordResult.example_sentence">
+              <dt>Try it</dt>
+              <dd>{{ wordResult.example_sentence }}</dd>
+            </template>
+          </dl>
+        </div>
+
+        <div v-else class="spoken-script" data-testid="story-text">
           {{ spokenText }}
         </div>
 
