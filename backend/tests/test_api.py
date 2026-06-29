@@ -105,6 +105,7 @@ class FakeWordExplorerService:
         self.calls = 0
         self.request_ids: list[str | None] = []
         self.client_ips: list[str | None] = []
+        self.image_sizes: list[tuple[int, int]] = []
 
     def explore_word(
         self,
@@ -115,6 +116,7 @@ class FakeWordExplorerService:
         client_ip: str | None = None,
     ) -> WordExplorerResult:
         self.calls += 1
+        self.image_sizes.append(image.size)
         self.request_ids.append(request_id)
         self.client_ips.append(client_ip)
         if self.error is not None:
@@ -170,7 +172,7 @@ def _sample_word() -> WordExplorerResult:
         pronunciation_hint="brayv",
         kid_explanation="Brave means you try even when something feels a little scary.",
         example_sentence="The brave rabbit hopped across the bridge.",
-        page_context="The pen points to the word in the sentence near the fox.",
+        page_context="The word is centered in a sentence near the fox.",
         spoken_script=(
             "The word is brave. Brave means you try even when something feels a little scary. "
             "The brave rabbit hopped across the bridge."
@@ -178,7 +180,7 @@ def _sample_word() -> WordExplorerResult:
         confidence=0.92,
         diagnostics={
             "mode": "gemma_vision",
-            "pointing_evidence": "The pen tip touches the word brave near the center of the page.",
+            "pointing_evidence": "The word brave crosses the center of the crop.",
             "layout_region": "center",
             "warnings": [],
         },
@@ -343,6 +345,10 @@ def test_read_job_endpoint_returns_completed_status_audio_url_and_story(tmp_path
         assert payload["story"]["caregiver_cues"][0]["cue"].startswith("Ask what")
         assert payload["paragraphs_total"] >= 1
         assert payload["paragraphs_completed"] == payload["paragraphs_total"]
+        assert payload["timings"]["image_normalize_ms"] >= 0
+        assert payload["timings"]["gemma_pipeline_ms"] >= 0
+        assert payload["timings"]["tts_ms"] >= 0
+        assert payload["timings"]["total_ms"] >= payload["timings"]["tts_ms"]
 
 
 def test_read_job_endpoint_surfaces_story_before_audio_completion(tmp_path: Path) -> None:
@@ -431,7 +437,9 @@ def test_audio_asset_endpoint_serves_cached_wav(tmp_path: Path) -> None:
 def test_word_job_endpoint_returns_completed_status_audio_url_and_word(tmp_path: Path) -> None:
     word_service = FakeWordExplorerService()
     tts = FakeTtsService()
+    settings = Settings(word_explorer_crop_fraction=0.5)
     app = create_app(
+        settings=settings,
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
         word_explorer_service=word_service,
@@ -457,18 +465,26 @@ def test_word_job_endpoint_returns_completed_status_audio_url_and_word(tmp_path:
     assert payload["word"]["kid_explanation"].startswith("Brave means")
     assert payload["paragraphs_total"] >= 1
     assert payload["paragraphs_completed"] == payload["paragraphs_total"]
+    assert payload["timings"]["image_normalize_ms"] >= 0
+    assert payload["timings"]["image_crop_ms"] >= 0
+    assert payload["timings"]["gemma_pipeline_ms"] >= 0
+    assert payload["timings"]["tts_ms"] >= 0
+    assert payload["timings"]["total_ms"] >= payload["timings"]["tts_ms"]
     assert tts.calls == [_sample_word().spoken_script]
     assert "pointing_evidence" not in tts.calls[0]
     assert word_service.request_ids == [request_id]
     assert word_service.client_ips == ["203.0.113.45"]
+    assert word_service.image_sizes == [(60, 30)]
     assert app.state.word_job_manager.get_job(request_id).image is None
 
 
-def test_word_job_endpoint_fails_cleanly_when_pointer_is_unclear(tmp_path: Path) -> None:
+def test_word_job_endpoint_fails_cleanly_when_centered_word_is_unclear(tmp_path: Path) -> None:
     app = create_app(
         ocr_service=FakeOcrService(),
         story_compiler_service=FakeStoryCompilerService(),
-        word_explorer_service=FakeWordExplorerService(error=WordExplorerError("OpenRead could not tell which word the pen was pointing to.")),
+        word_explorer_service=FakeWordExplorerService(
+            error=WordExplorerError("OpenRead could not identify the word in the center.")
+        ),
         tts_service=FakeTtsService(),
         media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
     )
@@ -483,7 +499,7 @@ def test_word_job_endpoint_fails_cleanly_when_pointer_is_unclear(tmp_path: Path)
 
     assert payload["status"] == "failed"
     assert payload["stage"] == "failed"
-    assert "could not tell which word" in payload["error"]
+    assert "could not identify the word" in payload["error"]
 
 
 def test_read_endpoint_returns_busy_when_gate_is_full(tmp_path: Path) -> None:

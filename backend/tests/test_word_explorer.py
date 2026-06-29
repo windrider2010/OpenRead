@@ -32,7 +32,7 @@ def _word_json() -> str:
         pronunciation_hint="brayv",
         kid_explanation="Brave means you try even when something feels a little scary.",
         example_sentence="The brave rabbit hopped across the bridge.",
-        page_context="The pen points to the word near the rabbit.",
+        page_context="The word is centered in a sentence near the rabbit.",
         spoken_script=(
             "The word is brave. Brave means you try even when something feels a little scary. "
             "The brave rabbit hopped across the bridge."
@@ -40,7 +40,7 @@ def _word_json() -> str:
         confidence=0.93,
         diagnostics={
             "mode": "gemma_vision",
-            "pointing_evidence": "The pen tip touches the word brave.",
+            "pointing_evidence": "The word brave crosses the center of the crop.",
             "layout_region": "center",
             "warnings": [],
         },
@@ -68,12 +68,12 @@ def test_gemma_word_explorer_repairs_invalid_trailing_commas() -> None:
       "pronunciation_hint": "moon",
       "kid_explanation": "A moon is a bright round thing we see in the night sky.",
       "example_sentence": "The moon shines at bedtime.",
-      "page_context": "The pen points to moon near the top of the page.",
+      "page_context": "Moon is centered near the top of the page.",
       "spoken_script": "The word is moon. A moon is a bright round thing we see in the night sky.",
       "confidence": 0.88,
       "diagnostics": {
         "mode": "gemma_vision",
-        "pointing_evidence": "The pen tip points at moon.",
+        "pointing_evidence": "Moon is nearest the center of the crop.",
         "layout_region": "top",
         "warnings": [],
       },
@@ -97,34 +97,44 @@ def test_gemma_word_explorer_falls_back_to_text_like_output_after_retry() -> Non
 
     result = explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
 
-    assert result.selected_word == "pointed word"
+    assert result.selected_word == "center word"
     assert result.spoken_script == "The word means a little home for a bird."
     assert result.diagnostics.warnings == ["Gemma returned malformed JSON. Used plain-text fallback for TTS."]
 
 
-def test_gemma_word_explorer_fails_when_pointed_word_is_unclear() -> None:
+def test_gemma_word_explorer_fails_when_centered_word_is_unclear() -> None:
     payload = WordExplorerResult(
         selected_word="unknown",
         normalized_word=None,
         language=None,
         part_of_speech=None,
         pronunciation_hint=None,
-        kid_explanation="I cannot tell which word is being pointed at.",
+        kid_explanation="I cannot tell which word is centered.",
         example_sentence=None,
         page_context=None,
-        spoken_script="I cannot tell which word is being pointed at.",
+        spoken_script="I cannot tell which word is centered.",
         confidence=0.1,
         diagnostics={
             "mode": "gemma_vision",
-            "pointing_evidence": "The pointer is far from the printed words.",
+            "pointing_evidence": "The image center falls between several blurred words.",
             "layout_region": None,
-            "warnings": ["Pointer is unclear."],
+            "warnings": ["Centered word is unclear."],
         },
     )
     explorer = FakeGemmaWordExplorer([payload.model_dump_json(), payload.model_dump_json()])
 
-    with pytest.raises(WordExplorerError, match="could not tell which word"):
+    with pytest.raises(WordExplorerError, match="could not identify the word"):
         explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
+
+
+def test_gemma_word_explorer_prompt_selects_center_without_physical_pointer() -> None:
+    explorer = FakeGemmaWordExplorer([_word_json()])
+
+    explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
+
+    assert "nearest the exact center" in explorer.prompts[0]
+    assert "Do not require or search for a pen" in explorer.prompts[0]
+    assert "Find the pen" not in explorer.prompts[0]
 
 
 def test_gemma_word_explorer_records_success_diagnostics(tmp_path) -> None:
@@ -142,6 +152,10 @@ def test_gemma_word_explorer_records_success_diagnostics(tmp_path) -> None:
     assert payload["client_ip"] == "203.0.113.55"
     assert payload["status"] == "completed"
     assert payload["word_result"]["selected_word"] == "brave"
+    assert payload["timings"]["encoded_image_bytes"] > 0
+    assert payload["timings"]["attempts"][0]["generation_ms"] >= 0
+    assert payload["timings"]["attempts"][0]["parse_validation_ms"] >= 0
+    assert payload["timings"]["service_total_ms"] >= 0
     assert "image" not in payload
 
 

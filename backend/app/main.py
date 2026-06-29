@@ -5,9 +5,10 @@ import logging
 import threading
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +29,7 @@ from app.models import (
     WordJobStatusResponse,
 )
 from app.services.gemma_diagnostics import GemmaDiagnosticsStore
-from app.services.image_pipeline import ImageValidationError, normalize_uploaded_image
+from app.services.image_pipeline import ImageValidationError, crop_center_region, normalize_uploaded_image
 from app.services.media_store import MediaStore
 from app.services.ocr_service import OcrService, PaddleOcrService
 from app.services.story_compiler import (
@@ -81,6 +82,9 @@ class ReadJob:
     paragraphs_total: int = 0
     paragraphs_completed: int = 0
     error: str | None = None
+    request_started_perf: float = field(default_factory=perf_counter, repr=False)
+    enqueued_perf: float = field(default_factory=perf_counter, repr=False)
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -100,6 +104,9 @@ class WordJob:
     paragraphs_total: int = 0
     paragraphs_completed: int = 0
     error: str | None = None
+    request_started_perf: float = field(default_factory=perf_counter, repr=False)
+    enqueued_perf: float = field(default_factory=perf_counter, repr=False)
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 class ReadJobManager:
@@ -119,6 +126,8 @@ class ReadJobManager:
         lang_hint: str | None,
         compiler_mode: CompilerMode,
         client_ip: str | None,
+        request_started_perf: float | None = None,
+        normalization_ms: float = 0.0,
     ) -> ReadJob:
         now = datetime.now(UTC)
         job = ReadJob(
@@ -132,6 +141,9 @@ class ReadJobManager:
             lang_hint=lang_hint,
             compiler_mode=compiler_mode,
             client_ip=client_ip,
+            request_started_perf=request_started_perf or perf_counter(),
+            enqueued_perf=perf_counter(),
+            timings={"image_normalize_ms": round(normalization_ms, 3)},
         )
         with self._lock:
             self._jobs[job.request_id] = job
@@ -199,10 +211,12 @@ class ReadJobManager:
                 self._queue.task_done()
 
     async def _process_job(self, app: FastAPI, request_id: str) -> None:
+        processing_started = perf_counter()
         with self._lock:
             job = self._jobs.get(request_id)
             if job is None:
                 return
+            job.timings["queue_wait_ms"] = round((processing_started - job.enqueued_perf) * 1000, 3)
             job.status = "processing"
             job.stage = "ocr"
             job.updated_at = datetime.now(UTC)
@@ -211,8 +225,10 @@ class ReadJobManager:
             lang_hint = job.lang_hint
             compiler_mode = job.compiler_mode
             client_ip = job.client_ip
+            request_started_perf = job.request_started_perf
 
         try:
+            story_started = perf_counter()
             if image is not None:
                 with self._lock:
                     compiling_job = self._jobs.get(request_id)
@@ -221,9 +237,15 @@ class ReadJobManager:
                         compiling_job.updated_at = datetime.now(UTC)
                 story = await _compile_story_for_image(app, image, compiler_mode, lang_hint, request_id, client_ip)
                 source_text = story.spoken_script
+                story_timing_key = "gemma_pipeline_ms"
             else:
                 story = story_from_text(input_text or "", mode=compiler_mode)
                 source_text = story.spoken_script
+                story_timing_key = "text_prepare_ms"
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings[story_timing_key] = _elapsed_ms(story_started)
 
             if not source_text:
                 raise ValueError("No readable text was produced from the submitted input.")
@@ -250,6 +272,7 @@ class ReadJobManager:
                     progress_job.paragraphs_completed = completed
                     progress_job.updated_at = datetime.now(UTC)
 
+            tts_started = perf_counter()
             audio = await asyncio.to_thread(
                 synthesize_text_in_paragraphs,
                 app.state.tts_service,
@@ -257,12 +280,21 @@ class ReadJobManager:
                 lang_hint,
                 progress_callback=on_tts_progress,
             )
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings["tts_ms"] = _elapsed_ms(tts_started)
+            media_store_started = perf_counter()
             asset = app.state.media_store.store_audio(
                 request_id=request_id,
                 audio_bytes=audio.audio_bytes,
                 mime_type=audio.mime_type,
                 text=source_text,
             )
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings["media_store_ms"] = _elapsed_ms(media_store_started)
         except Exception as exc:
             logger.exception("Read job %s failed", request_id)
             with self._lock:
@@ -274,6 +306,17 @@ class ReadJobManager:
                     failed_job.updated_at = datetime.now(UTC)
                     failed_job.image = None
                     failed_job.input_text = None
+                    failed_job.timings["total_ms"] = round((perf_counter() - request_started_perf) * 1000, 3)
+                    failed_timings = dict(failed_job.timings)
+                else:
+                    failed_timings = {}
+            _update_pipeline_diagnostics(
+                app,
+                request_id=request_id,
+                status="failed",
+                timings=failed_timings,
+                error=str(exc),
+            )
             return
 
         with self._lock:
@@ -289,6 +332,15 @@ class ReadJobManager:
             completed_job.expires_at = asset.expires_at
             completed_job.image = None
             completed_job.input_text = None
+            completed_job.timings["total_ms"] = round((perf_counter() - request_started_perf) * 1000, 3)
+            completed_timings = dict(completed_job.timings)
+        _update_pipeline_diagnostics(
+            app,
+            request_id=request_id,
+            status="completed",
+            timings=completed_timings,
+            error=None,
+        )
 
 
 class WordJobManager:
@@ -306,6 +358,9 @@ class WordJobManager:
         image: object,
         lang_hint: str | None,
         client_ip: str | None,
+        request_started_perf: float | None = None,
+        normalization_ms: float = 0.0,
+        crop_ms: float = 0.0,
     ) -> WordJob:
         now = datetime.now(UTC)
         job = WordJob(
@@ -317,6 +372,12 @@ class WordJobManager:
             image=image,
             lang_hint=lang_hint,
             client_ip=client_ip,
+            request_started_perf=request_started_perf or perf_counter(),
+            enqueued_perf=perf_counter(),
+            timings={
+                "image_normalize_ms": round(normalization_ms, 3),
+                "image_crop_ms": round(crop_ms, 3),
+            },
         )
         with self._lock:
             self._jobs[job.request_id] = job
@@ -384,21 +445,29 @@ class WordJobManager:
                 self._queue.task_done()
 
     async def _process_job(self, app: FastAPI, request_id: str) -> None:
+        processing_started = perf_counter()
         with self._lock:
             job = self._jobs.get(request_id)
             if job is None:
                 return
+            job.timings["queue_wait_ms"] = round((processing_started - job.enqueued_perf) * 1000, 3)
             job.status = "processing"
             job.stage = "word_detect"
             job.updated_at = datetime.now(UTC)
             image = job.image
             lang_hint = job.lang_hint
             client_ip = job.client_ip
+            request_started_perf = job.request_started_perf
 
         try:
             if image is None:
                 raise ValueError("Word Explorer requires an image.")
+            gemma_started = perf_counter()
             word = await _explore_word_for_image(app, image, lang_hint, request_id, client_ip)
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings["gemma_pipeline_ms"] = _elapsed_ms(gemma_started)
             source_text = word.spoken_script
             if not source_text:
                 raise ValueError("No word explanation was produced from the submitted input.")
@@ -425,6 +494,7 @@ class WordJobManager:
                     progress_job.paragraphs_completed = completed
                     progress_job.updated_at = datetime.now(UTC)
 
+            tts_started = perf_counter()
             audio = await asyncio.to_thread(
                 synthesize_text_in_paragraphs,
                 app.state.tts_service,
@@ -432,12 +502,21 @@ class WordJobManager:
                 lang_hint,
                 progress_callback=on_tts_progress,
             )
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings["tts_ms"] = _elapsed_ms(tts_started)
+            media_store_started = perf_counter()
             asset = app.state.media_store.store_audio(
                 request_id=request_id,
                 audio_bytes=audio.audio_bytes,
                 mime_type=audio.mime_type,
                 text=source_text,
             )
+            with self._lock:
+                timing_job = self._jobs.get(request_id)
+                if timing_job is not None:
+                    timing_job.timings["media_store_ms"] = _elapsed_ms(media_store_started)
         except Exception as exc:
             logger.exception("Word job %s failed", request_id)
             with self._lock:
@@ -448,6 +527,17 @@ class WordJobManager:
                     failed_job.error = str(exc)
                     failed_job.updated_at = datetime.now(UTC)
                     failed_job.image = None
+                    failed_job.timings["total_ms"] = round((perf_counter() - request_started_perf) * 1000, 3)
+                    failed_timings = dict(failed_job.timings)
+                else:
+                    failed_timings = {}
+            _update_pipeline_diagnostics(
+                app,
+                request_id=request_id,
+                status="failed",
+                timings=failed_timings,
+                error=str(exc),
+            )
             return
 
         with self._lock:
@@ -462,6 +552,15 @@ class WordJobManager:
             completed_job.mime_type = audio.mime_type
             completed_job.expires_at = asset.expires_at
             completed_job.image = None
+            completed_job.timings["total_ms"] = round((perf_counter() - request_started_perf) * 1000, 3)
+            completed_timings = dict(completed_job.timings)
+        _update_pipeline_diagnostics(
+            app,
+            request_id=request_id,
+            status="completed",
+            timings=completed_timings,
+            error=None,
+        )
 
 
 def create_app(
@@ -519,7 +618,7 @@ def create_app(
     )
     app.state.word_explorer_service = word_explorer_service or GemmaWordExplorerService(
         api_key=settings.gemini_api_key,
-        model=settings.gemma_model,
+        model=settings.word_explorer_model,
         diagnostics_recorder=app.state.gemma_diagnostics_store,
     )
     app.state.tts_service = tts_service or KokoroTtsService(
@@ -662,6 +761,7 @@ def create_app(
         lang_hint: str | None = Form(None),
         compiler_mode: str | None = Form(None),
     ) -> ReadJobAcceptedResponse:
+        request_started_perf = perf_counter()
         if image is None and not (text or "").strip():
             raise HTTPException(status_code=422, detail="Provide either `image` or `text`.")
         if image is not None and (text or "").strip():
@@ -673,8 +773,11 @@ def create_app(
 
         normalized_image = None
         input_text = None
+        normalization_ms = 0.0
         if image is not None:
+            normalization_started = perf_counter()
             normalized = await _read_and_normalize_upload(image, app)
+            normalization_ms = _elapsed_ms(normalization_started)
             normalized_image = normalized.image
         else:
             input_text = (text or "").strip()
@@ -690,6 +793,8 @@ def create_app(
             lang_hint=lang_hint,
             compiler_mode=resolved_compiler_mode,
             client_ip=_client_ip(request),
+            request_started_perf=request_started_perf,
+            normalization_ms=normalization_ms,
         )
         await app.state.read_job_manager.enqueue(job.request_id)
         return ReadJobAcceptedResponse(request_id=job.request_id, status=job.status)
@@ -714,6 +819,7 @@ def create_app(
             paragraphs_completed=job.paragraphs_completed,
             error=job.error,
             story=job.story,
+            timings=job.timings,
         )
 
     @app.post("/api/word/jobs", response_model=WordJobAcceptedResponse, status_code=202)
@@ -722,11 +828,23 @@ def create_app(
         image: UploadFile = File(...),
         lang_hint: str | None = Form(None),
     ) -> WordJobAcceptedResponse:
+        request_started_perf = perf_counter()
+        normalization_started = perf_counter()
         normalized = await _read_and_normalize_upload(image, app)
+        normalization_ms = _elapsed_ms(normalization_started)
+        crop_started = perf_counter()
+        cropped = crop_center_region(
+            normalized.image,
+            fraction=settings.word_explorer_crop_fraction,
+        )
+        crop_ms = _elapsed_ms(crop_started)
         job = app.state.word_job_manager.create_job(
-            image=normalized.image,
+            image=cropped.image,
             lang_hint=lang_hint,
             client_ip=_client_ip(request),
+            request_started_perf=request_started_perf,
+            normalization_ms=normalization_ms,
+            crop_ms=crop_ms,
         )
         await app.state.word_job_manager.enqueue(job.request_id)
         return WordJobAcceptedResponse(request_id=job.request_id, status=job.status)
@@ -751,6 +869,7 @@ def create_app(
             paragraphs_total=job.paragraphs_total,
             paragraphs_completed=job.paragraphs_completed,
             error=job.error,
+            timings=job.timings,
         )
 
     @app.get("/media/audio/{request_id}", name="get_audio_asset")
@@ -840,6 +959,31 @@ def _client_ip(request: Request) -> str | None:
     if request.client is not None:
         return request.client.host
     return None
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
+
+
+def _update_pipeline_diagnostics(
+    app: FastAPI,
+    *,
+    request_id: str,
+    status: str,
+    timings: dict[str, float],
+    error: str | None,
+) -> None:
+    try:
+        app.state.gemma_diagnostics_store.update(
+            request_id,
+            {
+                "pipeline_status": status,
+                "pipeline_error": error,
+                "timings": {"pipeline": timings},
+            },
+        )
+    except Exception:
+        logger.exception("Failed to update pipeline diagnostics for request %s", request_id)
 
 
 def _register_spa_routes(app: FastAPI) -> None:

@@ -25,6 +25,18 @@ class NormalizedImage:
     height: int
 
 
+def crop_center_region(image: Image.Image, *, fraction: float) -> NormalizedImage:
+    if not 0 < fraction <= 1:
+        raise ValueError("Center crop fraction must be greater than 0 and at most 1.")
+
+    crop_width = max(1, round(image.width * fraction))
+    crop_height = max(1, round(image.height * fraction))
+    left = max(0, (image.width - crop_width) // 2)
+    top = max(0, (image.height - crop_height) // 2)
+    cropped = image.crop((left, top, left + crop_width, top + crop_height))
+    return NormalizedImage(image=cropped, width=cropped.width, height=cropped.height)
+
+
 def normalize_uploaded_image(
     raw_bytes: bytes,
     *,

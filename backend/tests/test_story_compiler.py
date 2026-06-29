@@ -195,6 +195,10 @@ def test_gemma_story_compiler_records_success_diagnostics(tmp_path) -> None:
     assert payload["status"] == "completed"
     assert payload["fallback_used"] is False
     assert payload["raw_gemma_outputs"][0]["output"] == _special_story_json()
+    assert payload["timings"]["image_encode_ms"] >= 0
+    assert payload["timings"]["attempts"][0]["generation_ms"] >= 0
+    assert payload["timings"]["attempts"][0]["parse_validation_ms"] >= 0
+    assert payload["timings"]["service_total_ms"] >= 0
     assert "image" not in payload
 
 

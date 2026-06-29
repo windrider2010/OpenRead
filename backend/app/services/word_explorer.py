@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any, Protocol
 
 from PIL import Image
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class WordExplorerError(RuntimeError):
-    """Raised when a pointed word cannot be explained."""
+    """Raised when the centered word cannot be explained."""
 
 
 class WordExplorerService(Protocol):
@@ -31,7 +32,7 @@ class WordExplorerService(Protocol):
         request_id: str | None = None,
         client_ip: str | None = None,
     ) -> WordExplorerResult:
-        """Find the pen-pointed word and explain it for a child."""
+        """Find the word nearest the image center and explain it for a child."""
 
 
 class GemmaDiagnosticsRecorder(Protocol):
@@ -62,7 +63,16 @@ class GemmaWordExplorerService:
         if not self._api_key:
             raise WordExplorerError("GEMINI_API_KEY is required for OpenRead word exploration.")
 
+        service_started = perf_counter()
+        image_encode_started = perf_counter()
         image_bytes = _image_to_jpeg_bytes(image)
+        timings: dict[str, Any] = {
+            "input_width": image.width,
+            "input_height": image.height,
+            "encoded_image_bytes": len(image_bytes),
+            "image_encode_ms": _elapsed_ms(image_encode_started),
+            "attempts": [],
+        }
         prompt = _build_word_prompt(lang_hint=lang_hint)
         last_error: Exception | None = None
         raw_outputs: list[dict[str, object]] = []
@@ -75,11 +85,38 @@ class GemmaWordExplorerService:
                     "\n\nYour previous response did not validate. Return only corrected JSON that matches "
                     f"the schema. Validation error: {last_error}"
                 )
-            raw = self._generate(image_bytes=image_bytes, prompt=f"{prompt}{repair_note}")
+            attempt_timing: dict[str, Any] = {"attempt": attempt + 1}
+            generation_started = perf_counter()
+            try:
+                raw = self._generate(image_bytes=image_bytes, prompt=f"{prompt}{repair_note}")
+            except Exception as exc:
+                attempt_timing["generation_ms"] = _elapsed_ms(generation_started)
+                attempt_timing["error"] = str(exc)
+                timings["attempts"].append(attempt_timing)
+                timings["service_total_ms"] = _elapsed_ms(service_started)
+                self._record_diagnostic(
+                    request_id=request_id,
+                    client_ip=client_ip,
+                    lang_hint=lang_hint,
+                    status="failed",
+                    raw_outputs=raw_outputs,
+                    validation_errors=validation_errors,
+                    final_result=None,
+                    fallback_used=False,
+                    error=str(exc),
+                    timings=timings,
+                )
+                raise
+            attempt_timing["generation_ms"] = _elapsed_ms(generation_started)
+            attempt_timing["output_chars"] = len(raw)
             raw_outputs.append({"attempt": attempt + 1, "output": raw})
+            parse_started = perf_counter()
             try:
                 result = _parse_word_json(raw)
                 result = _validated_word_result(result)
+                attempt_timing["parse_validation_ms"] = _elapsed_ms(parse_started)
+                timings["attempts"].append(attempt_timing)
+                timings["service_total_ms"] = _elapsed_ms(service_started)
                 self._record_diagnostic(
                     request_id=request_id,
                     client_ip=client_ip,
@@ -90,14 +127,19 @@ class GemmaWordExplorerService:
                     final_result=result,
                     fallback_used=False,
                     error=None,
+                    timings=timings,
                 )
                 return result
             except (ValidationError, ValueError) as exc:
+                attempt_timing["parse_validation_ms"] = _elapsed_ms(parse_started)
+                attempt_timing["validation_error"] = str(exc)
+                timings["attempts"].append(attempt_timing)
                 last_error = exc
                 validation_errors.append(str(exc))
                 if attempt == 1:
                     fallback = None if _is_unclear_word_error(exc) else _word_result_from_text_like_output(raw)
                     if fallback is not None:
+                        timings["service_total_ms"] = _elapsed_ms(service_started)
                         self._record_diagnostic(
                             request_id=request_id,
                             client_ip=client_ip,
@@ -108,8 +150,10 @@ class GemmaWordExplorerService:
                             final_result=fallback,
                             fallback_used=True,
                             error=str(exc),
+                            timings=timings,
                         )
                         return fallback
+                    timings["service_total_ms"] = _elapsed_ms(service_started)
                     self._record_diagnostic(
                         request_id=request_id,
                         client_ip=client_ip,
@@ -120,9 +164,10 @@ class GemmaWordExplorerService:
                         final_result=None,
                         fallback_used=False,
                         error=str(exc),
+                        timings=timings,
                     )
                     raise WordExplorerError(
-                        "OpenRead could not tell which word the pen was pointing to. Try a closer photo."
+                        "OpenRead could not identify the word in the center. Move closer and try again."
                     ) from exc
             except StoryCompilerError as exc:
                 raise WordExplorerError(str(exc)) from exc
@@ -141,6 +186,7 @@ class GemmaWordExplorerService:
         final_result: WordExplorerResult | None,
         fallback_used: bool,
         error: str | None,
+        timings: dict[str, Any],
     ) -> None:
         if self._diagnostics_recorder is None or request_id is None:
             return
@@ -156,6 +202,7 @@ class GemmaWordExplorerService:
             "raw_gemma_outputs": raw_outputs,
             "validation_errors": validation_errors,
             "error": error,
+            "timings": timings,
             "final_spoken_script": final_result.spoken_script if final_result is not None else None,
             "word_result": final_result.model_dump() if final_result is not None else None,
         }
@@ -189,6 +236,10 @@ class GemmaWordExplorerService:
         if not isinstance(text, str) or not text.strip():
             raise WordExplorerError("Gemma returned an empty word explanation response.")
         return text
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
 
 
 def _parse_word_json(raw: str) -> WordExplorerResult:
@@ -242,7 +293,7 @@ def _word_result_from_text_like_output(raw: str) -> WordExplorerResult | None:
     if text is None:
         return None
     return WordExplorerResult(
-        selected_word="pointed word",
+        selected_word="center word",
         normalized_word=None,
         language=None,
         part_of_speech=None,
@@ -266,11 +317,12 @@ def _build_word_prompt(*, lang_hint: str | None) -> str:
 You are OpenRead Word Explorer, a gentle child-friendly vocabulary guide for picture books.
 
 Task:
-- Analyze the page photo.
-- Find the pen, finger, pencil, or pointer tip.
-- Identify the single printed word the tip is pointing at or closest to.
+- Analyze this center crop from a picture-book page.
+- Identify the single printed word nearest the exact center of the image.
+- If the center falls inside a word or between its letters, select that whole word.
+- Do not require or search for a pen, finger, pencil, or other physical pointer.
 - Explain that word in simple language a young child can understand.
-- Use the page and illustration context only to make the explanation clearer.
+- Use nearby text and illustration context only to disambiguate the centered word and make the explanation clearer.
 - Do not explain the whole page or tell a new story.
 - Return only JSON matching the provided schema.
 - Preserve apostrophes, quotation marks, curly quotes, dashes, ellipses, CJK punctuation, and symbols as valid JSON string content.
@@ -280,7 +332,7 @@ Task:
 Language hint: {lang_hint or "auto"}
 
 Output rules:
-- `selected_word` is the exact visible printed word being pointed at. If the pointed word is unclear, return an empty string so validation can fail.
+- `selected_word` is the exact visible printed word nearest the image center. If the centered word is unclear, return an empty string so validation can fail.
 - `normalized_word` is a dictionary-style form when useful, otherwise null.
 - `language` should name the detected language when you can tell.
 - `part_of_speech` should be child-friendly, such as "noun", "verb", "describing word", or null if unsure.
@@ -291,5 +343,5 @@ Output rules:
 - `spoken_script` is exactly what should be sent to text-to-speech. It should say the word, then the kid-friendly meaning, and may include the example sentence.
 - `confidence` must be 0 to 1.
 - `diagnostics.mode` must be "gemma_vision".
-- `diagnostics.pointing_evidence` should briefly describe why you chose that word, such as "pen tip touches the word near the top-right speech bubble".
+- `diagnostics.pointing_evidence` should briefly describe why you chose that word, such as "the word crosses the exact center of the crop".
 """.strip()

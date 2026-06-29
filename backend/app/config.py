@@ -57,6 +57,11 @@ class Settings:
     espeak_ng_path: str | None = os.getenv("ESPEAK_NG_PATH") or None
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
     gemma_model: str = os.getenv("GEMMA_MODEL", "gemma-4-31b-it")
+    word_explorer_model: str = os.getenv("WORD_EXPLORER_MODEL", "gemma-4-26b-a4b-it")
+    word_explorer_crop_fraction: float = min(
+        1.0,
+        max(0.2, float(os.getenv("WORD_EXPLORER_CROP_FRACTION", "0.62"))),
+    )
     story_compiler_mode: str = os.getenv("STORY_COMPILER_MODE", "gemma_vision")
     story_compiler_timeout_seconds: int = max(1, int(os.getenv("STORY_COMPILER_TIMEOUT_SECONDS", "90")))
     openread_log_gemma_failures: bool = _bool_env("OPENREAD_LOG_GEMMA_FAILURES", True)

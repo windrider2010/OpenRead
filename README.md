@@ -1,8 +1,8 @@
 # OpenRead
 
-OpenRead is a mobile-first picture-book reading helper built for the Kaggle Gemma 4 Good Hackathon. A caregiver opens the web app on a phone, takes one photo of a children's book page, and gets a layout-aware read-aloud experience with large follow-along text, generated audio, reading-order notes, and optional caregiver questions. The same screen also includes an optional Word Explorer mode: point at a word with a pen, take a photo, and hear a kid-friendly explanation.
+OpenRead is a mobile-first picture-book reading helper built for the Kaggle Gemma 4 Good Hackathon. A caregiver opens the web app on a phone, takes one photo of a children's book page, and gets a layout-aware read-aloud experience with large follow-along text, generated audio, reading-order notes, and optional caregiver questions. The same screen also includes an optional Word Explorer mode: center a word in the camera target, take a photo, and hear a kid-friendly explanation.
 
-The core technical idea is the story-plan layer. OpenRead does not send OCR text directly to TTS. It sends the page image to Gemma 4, optionally with PaddleOCR evidence, and asks Gemma to return a validated JSON reading plan. Kokoro TTS then receives only the child-facing `spoken_script`. Word Explorer uses the same Gemma vision and Kokoro pattern for a narrower task: locate the pen-pointed word and return a structured child-friendly vocabulary explanation.
+The core technical idea is the story-plan layer. OpenRead does not send OCR text directly to TTS. It sends the page image to Gemma 4, optionally with PaddleOCR evidence, and asks Gemma to return a validated JSON reading plan. Kokoro TTS then receives only the child-facing `spoken_script`. Word Explorer uses the same Gemma vision and Kokoro pattern for a narrower task: crop around the camera target, locate the centered word, and return a structured child-friendly vocabulary explanation.
 
 ## What Makes OpenRead Different
 
@@ -64,7 +64,7 @@ BibTeX:
 - Reconstructs reading order for non-linear picture-book layouts.
 - Preserves visible text where possible and adds brief picture narration only when useful.
 - Keeps caregiver cues on screen and out of the spoken audio.
-- Provides optional Word Explorer mode for pen-pointed vocabulary explanations.
+- Provides optional Word Explorer mode for center-targeted vocabulary explanations without a physical pointer.
 - Generates 24 kHz WAV read-aloud audio with Kokoro TTS.
 - Keeps `/api/ocr` available as a PaddleOCR diagnostic endpoint and `ocr_assisted` comparison path.
 
@@ -100,7 +100,8 @@ Phone camera
      -> mobile UI shows audio, large text, reading order, and questions
   -> Explore Word: POST /api/word/jobs
      -> image validation and normalization
-     -> Gemma 4 word explorer locates the pen-pointed word
+     -> Center crop keeps the selected word and nearby context
+     -> Faster Gemma 4 word explorer locates the centered word
      -> validated WordExplorerResult JSON
      -> Kokoro TTS receives spoken_script only
      -> mobile UI shows the word, meaning, example, and audio
@@ -144,9 +145,10 @@ Vite defaults to `http://localhost:5173` and proxies `/api`, `/media`, and `/hea
 - `POST /api/read/jobs` accepts either `image` or `text`, never both, and returns `202` with a `request_id`.
 - Image jobs run through the OpenRead story compiler before TTS. `gemma_vision` sends the image directly to Gemma; `ocr_assisted` runs PaddleOCR first and sends OCR blocks plus the image to Gemma.
 - The UI polls `GET /api/read/jobs/{request_id}` every 1.5 seconds. Job statuses are `queued`, `processing`, `completed`, and `failed`; stages are `queued`, `story_compile`, `ocr`, `tts`, `completed`, and `failed`.
+- Read and Word Explorer job status payloads include millisecond `timings` for normalization, queue wait, Gemma processing, TTS, media storage, and total request time.
 - Completed jobs return the compiled `spoken_script` as `text`, the structured `story` payload, and `/media/audio/{request_id}`. Audio is WAV at 24 kHz and expires according to `MEDIA_TTL_SECONDS`.
 - `POST /api/word/jobs` accepts an uploaded `image` plus optional `lang_hint` and returns `202` with a `request_id`.
-- Word jobs use Gemma vision to identify the pen-pointed printed word, explain it for a child, and return a structured `word` payload. The UI polls `GET /api/word/jobs/{request_id}`; stages are `queued`, `word_detect`, `tts`, `completed`, and `failed`.
+- Word jobs crop the normalized image around the camera target, then use the faster `WORD_EXPLORER_MODEL` to identify the centered printed word, explain it for a child, and return a structured `word` payload. The UI polls `GET /api/word/jobs/{request_id}`; stages are `queued`, `word_detect`, `tts`, `completed`, and `failed`.
 - Completed word jobs return the `spoken_script` as `text`, the structured `word` payload, and `/media/audio/{request_id}`.
 - `POST /api/read` is still available for synchronous API use. It supports JSON metadata responses by default and `response_mode=stream` for direct WAV streaming.
 - `/api/ocr` remains a diagnostics endpoint. OCR language hinting maps `en` to PaddleOCR English; all other hints, including `bilingual` and `zh`, use PaddleOCR Chinese.
@@ -158,6 +160,7 @@ The default UI is intentionally simple:
 - one screen
 - one primary `Open Camera` / `Take Photo` button
 - default `Read Page` mode with a small toggle for optional `Explore Word`
+- a center target in `Explore Word`, so selecting a word does not require a pen or finger
 - large generated text for follow-along reading
 - large word, meaning, and example text in Word Explorer mode
 - audio player when synthesis completes
@@ -174,6 +177,8 @@ Important environment variables from `.env.example`:
 - `MAX_TEXT_CHARS` bounds direct text input and OCR output sent to TTS.
 - `MAX_ACTIVE_READS` controls async read-job worker count and synchronous `/api/read` concurrency.
 - `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, and `STORY_COMPILER_TIMEOUT_SECONDS` control the Gemma story compiler.
+- `WORD_EXPLORER_MODEL` selects the latency-focused Word Explorer model; it defaults to `gemma-4-26b-a4b-it` while page compilation remains on `GEMMA_MODEL`.
+- `WORD_EXPLORER_CROP_FRACTION` controls the centered fraction retained for Word Explorer. The default `0.62` keeps nearby context while reducing image tokens.
 - `OPENREAD_LOG_GEMMA_FAILURES`, `OPENREAD_LOG_GEMMA_SUCCESSES`, and `OPENREAD_GEMMA_LOG_TTL_SECONDS` control temporary raw Gemma-output diagnostics. By default, success and failure diagnostics are enabled and retained for 7 days.
 - `PRELOAD_MODELS=1` enables startup preloading. `PRELOAD_TTS=1` warms Kokoro by default; `PRELOAD_OCR=0` leaves PaddleOCR lazy-loaded because OCR is only used for diagnostics and `ocr_assisted`.
 - `MEDIA_TTL_SECONDS`, `MEDIA_CLEANUP_INTERVAL_SECONDS`, and `MEDIA_MAX_BYTES` control generated-audio retention.
@@ -185,7 +190,7 @@ Important environment variables from `.env.example`:
 - Uploaded page photos are validated, normalized, and processed in memory by the backend. They are not durably stored by the application.
 - Read jobs and Word Explorer jobs are in-memory for the hackathon build. They are not durable across backend restarts.
 - Generated audio is cached under `backend/var/media` with TTL and disk-budget cleanup.
-- Gemma diagnostics are cached under `backend/var/diagnostics/gemma/{request_id}.json` with a 7-day default TTL. These records include raw Gemma text output, validation errors, fallback status, final spoken script, task/mode, model name, and client IP for abuse investigation. They do not include uploaded page images.
+- Gemma diagnostics are cached under `backend/var/diagnostics/gemma/{request_id}.json` with a 7-day default TTL. These records include raw Gemma text output, validation errors, fallback status, final spoken script, task/mode, model name, client IP, per-attempt generation/parsing timings, and end-to-end pipeline timings. They do not include uploaded page images.
 - `.env`, local logs, generated media, diagnostics, private keys, certificates, credentials, and local support notes are ignored by Git.
 - The structured Gemma output is auditable before speech synthesis: the UI can inspect the plan, while Kokoro receives only `spoken_script`.
 
@@ -206,6 +211,16 @@ uv run --directory backend python scripts/benchmark_story_compiler.py
 ```
 
 The benchmark runs both `gemma_vision` and `ocr_assisted` over fixtures and writes reports under `backend/var/diagnostics/openread/`.
+
+### Word Explorer Model Benchmark
+
+```powershell
+uv run --directory backend python scripts/benchmark_word_explorer.py `
+  --model gemma-4-31b-it `
+  --model gemma-4-26b-a4b-it
+```
+
+This benchmark uses the five real camera photos under `backend/tests/fixtures/word_explorer/` by default, applies production image normalization and the centered Word Explorer crop, runs every photo through each model, and writes detailed JSON/CSV reports under `backend/var/diagnostics/word-explorer-benchmark/`. Pass `--fixture-dir` or repeated `--fixture` arguments to use another fixture set. Use `--no-center-crop` for a full-frame comparison. It measures Gemma image encoding, generation, structured-output parsing, retries, and service total time while excluding TTS from the model comparison.
 
 ### Frontend
 
@@ -262,7 +277,7 @@ This acknowledgement is not a substitute for a full legal review before producti
 - Build the web bundle before running the backend directly in production, or use the Docker image, which builds and copies `web/dist` automatically.
 - Uploaded images are validated and normalized entirely in memory; they are not persisted to disk.
 - Story compilation requires `GEMINI_API_KEY`; text-only TTS requests still work without it.
-- Word Explorer requires `GEMINI_API_KEY` because identifying the pen-pointed word is a Gemma vision task.
+- Word Explorer requires `GEMINI_API_KEY` because identifying the centered word is a Gemma vision task.
 - Audio files and their JSON metadata are cached under `backend/var/media` on local disk with a TTL, a background cleanup loop, and an overall disk budget guard.
 - In production, Kokoro TTS is preloaded by default so the first read-aloud request does not pay the TTS cold-start cost. PaddleOCR is lazy-loaded unless `PRELOAD_OCR=1`.
 - `MAX_ACTIVE_READS=1` limits concurrent OCR+TTS jobs on CPU-first deployments.
@@ -318,6 +333,8 @@ MAX_ACTIVE_READS=1
 MAX_TEXT_CHARS=10000
 GEMINI_API_KEY=your-google-genai-key
 GEMMA_MODEL=gemma-4-31b-it
+WORD_EXPLORER_MODEL=gemma-4-26b-a4b-it
+WORD_EXPLORER_CROP_FRACTION=0.62
 STORY_COMPILER_MODE=gemma_vision
 STORY_COMPILER_TIMEOUT_SECONDS=90
 OPENREAD_LOG_GEMMA_FAILURES=1

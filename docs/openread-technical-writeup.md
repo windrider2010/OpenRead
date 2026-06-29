@@ -106,11 +106,15 @@ The default model is configured through:
 
 ```env
 GEMMA_MODEL=gemma-4-31b-it
+WORD_EXPLORER_MODEL=gemma-4-26b-a4b-it
+WORD_EXPLORER_CROP_FRACTION=0.62
 STORY_COMPILER_MODE=gemma_vision
 STORY_COMPILER_TIMEOUT_SECONDS=90
 ```
 
 The project uses `gemma-4-31b-it` because the task is not just captioning or OCR. The model must reason over mixed visual and textual evidence, infer story order, decide when illustration narration is useful, and keep adult-facing prompts out of spoken audio.
+
+Word Explorer has a narrower, latency-sensitive path. The camera places the desired word at the center of the frame, the backend retains the centered `62%` of each image dimension, and `gemma-4-26b-a4b-it` identifies and explains the word nearest the exact crop center. This reduces irrelevant image context and uses the faster A4B model without changing the full-page story compiler.
 
 Google describes Gemma 4 as an open model family built from Gemini 3 research, with 26B and 31B models positioned for frontier intelligence on personal computers, multimodal reasoning, and multilingual support. Those properties map directly to OpenRead's requirements: page images, child-facing language, bilingual or multilingual books, and reasoning over visual layout. Source: [Google DeepMind Gemma 4](https://deepmind.google/models/gemma/gemma-4/).
 

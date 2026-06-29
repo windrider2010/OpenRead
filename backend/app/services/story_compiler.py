@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any, Protocol
 
 from PIL import Image
@@ -63,7 +64,16 @@ class GemmaStoryCompilerService:
         if not self._api_key:
             raise StoryCompilerError("GEMINI_API_KEY is required for OpenRead story compilation.")
 
+        service_started = perf_counter()
+        image_encode_started = perf_counter()
         image_bytes = _image_to_jpeg_bytes(image)
+        timings: dict[str, Any] = {
+            "input_width": image.width,
+            "input_height": image.height,
+            "encoded_image_bytes": len(image_bytes),
+            "image_encode_ms": _elapsed_ms(image_encode_started),
+            "attempts": [],
+        }
         prompt = _build_prompt(mode=mode, lang_hint=lang_hint, ocr_page=ocr_page)
         last_error: Exception | None = None
         raw_outputs: list[dict[str, object]] = []
@@ -76,11 +86,39 @@ class GemmaStoryCompilerService:
                     "\n\nYour previous response did not validate. Return only corrected JSON that matches "
                     f"the schema. Validation error: {last_error}"
                 )
-            raw = self._generate(image_bytes=image_bytes, prompt=f"{prompt}{repair_note}")
+            attempt_timing: dict[str, Any] = {"attempt": attempt + 1}
+            generation_started = perf_counter()
+            try:
+                raw = self._generate(image_bytes=image_bytes, prompt=f"{prompt}{repair_note}")
+            except Exception as exc:
+                attempt_timing["generation_ms"] = _elapsed_ms(generation_started)
+                attempt_timing["error"] = str(exc)
+                timings["attempts"].append(attempt_timing)
+                timings["service_total_ms"] = _elapsed_ms(service_started)
+                self._record_diagnostic(
+                    request_id=request_id,
+                    client_ip=client_ip,
+                    mode=mode,
+                    lang_hint=lang_hint,
+                    status="failed",
+                    raw_outputs=raw_outputs,
+                    validation_errors=validation_errors,
+                    final_story=None,
+                    fallback_used=False,
+                    error=str(exc),
+                    timings=timings,
+                )
+                raise
+            attempt_timing["generation_ms"] = _elapsed_ms(generation_started)
+            attempt_timing["output_chars"] = len(raw)
             raw_outputs.append({"attempt": attempt + 1, "output": raw})
+            parse_started = perf_counter()
             try:
                 compiled = _parse_story_json(raw)
                 story = _validated_compilation(compiled, expected_mode=mode)
+                attempt_timing["parse_validation_ms"] = _elapsed_ms(parse_started)
+                timings["attempts"].append(attempt_timing)
+                timings["service_total_ms"] = _elapsed_ms(service_started)
                 self._record_diagnostic(
                     request_id=request_id,
                     client_ip=client_ip,
@@ -92,14 +130,19 @@ class GemmaStoryCompilerService:
                     final_story=story,
                     fallback_used=False,
                     error=None,
+                    timings=timings,
                 )
                 return story
             except (ValidationError, ValueError) as exc:
+                attempt_timing["parse_validation_ms"] = _elapsed_ms(parse_started)
+                attempt_timing["validation_error"] = str(exc)
+                timings["attempts"].append(attempt_timing)
                 last_error = exc
                 validation_errors.append(str(exc))
                 if attempt == 1:
                     fallback = _story_from_text_like_output(raw, mode=mode)
                     if fallback is not None:
+                        timings["service_total_ms"] = _elapsed_ms(service_started)
                         self._record_diagnostic(
                             request_id=request_id,
                             client_ip=client_ip,
@@ -111,8 +154,10 @@ class GemmaStoryCompilerService:
                             final_story=fallback,
                             fallback_used=True,
                             error=str(exc),
+                            timings=timings,
                         )
                         return fallback
+                    timings["service_total_ms"] = _elapsed_ms(service_started)
                     self._record_diagnostic(
                         request_id=request_id,
                         client_ip=client_ip,
@@ -124,6 +169,7 @@ class GemmaStoryCompilerService:
                         final_story=None,
                         fallback_used=False,
                         error=str(exc),
+                        timings=timings,
                     )
                     raise StoryCompilerError(f"Gemma returned invalid story JSON: {exc}") from exc
 
@@ -142,6 +188,7 @@ class GemmaStoryCompilerService:
         final_story: StoryCompilation | None,
         fallback_used: bool,
         error: str | None,
+        timings: dict[str, Any],
     ) -> None:
         if self._diagnostics_recorder is None or request_id is None:
             return
@@ -156,6 +203,7 @@ class GemmaStoryCompilerService:
             "raw_gemma_outputs": raw_outputs,
             "validation_errors": validation_errors,
             "error": error,
+            "timings": timings,
             "final_spoken_script": final_story.spoken_script if final_story is not None else None,
             "story_diagnostics": final_story.diagnostics.model_dump() if final_story is not None else None,
         }
@@ -189,6 +237,10 @@ class GemmaStoryCompilerService:
         if not isinstance(text, str) or not text.strip():
             raise StoryCompilerError("Gemma returned an empty story response.")
         return text
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
 
 
 def normalize_compiler_mode(raw_mode: str | None, default_mode: str) -> CompilerMode:

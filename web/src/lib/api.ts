@@ -60,6 +60,7 @@ export interface ReadJobProgressPayload {
   paragraphs_completed: number
   error: string | null
   story: StoryCompilation | null
+  timings?: Record<string, number>
 }
 
 export interface WordExplorerDiagnostics {
@@ -109,6 +110,7 @@ export interface WordJobProgressPayload {
   paragraphs_total: number
   paragraphs_completed: number
   error: string | null
+  timings?: Record<string, number>
 }
 
 const JOB_POLL_INTERVAL_MS = 1500

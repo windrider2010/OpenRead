@@ -36,6 +36,34 @@ def test_gemma_diagnostics_store_respects_logging_flags(tmp_path: Path) -> None:
     assert (tmp_path / "gemma" / "failed.json").exists()
 
 
+def test_gemma_diagnostics_store_merges_pipeline_timings(tmp_path: Path) -> None:
+    store = GemmaDiagnosticsStore(tmp_path / "gemma", ttl_seconds=604800)
+    path = store.record(
+        {
+            "request_id": "timed",
+            "status": "completed",
+            "timings": {"service_total_ms": 1250.0},
+        }
+    )
+    assert path is not None
+
+    updated = store.update(
+        "timed",
+        {
+            "pipeline_status": "completed",
+            "timings": {"pipeline": {"tts_ms": 400.0, "total_ms": 1800.0}},
+        },
+    )
+
+    assert updated == path
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["timings"]["service_total_ms"] == 1250.0
+    assert payload["timings"]["pipeline"]["tts_ms"] == 400.0
+    assert payload["timings"]["pipeline"]["total_ms"] == 1800.0
+    assert payload["pipeline_status"] == "completed"
+    assert "updated_at" in payload
+
+
 def test_gemma_diagnostics_store_cleans_expired_records(tmp_path: Path) -> None:
     store = GemmaDiagnosticsStore(tmp_path / "gemma", ttl_seconds=60)
     path = store.record({"request_id": "old", "status": "completed"})

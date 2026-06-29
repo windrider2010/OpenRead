@@ -48,6 +48,7 @@ class ReadJobStatusResponse(BaseModel):
     paragraphs_completed: int = 0
     error: str | None = None
     story: "StoryCompilation | None" = None
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 class WordJobAcceptedResponse(BaseModel):
@@ -88,6 +89,7 @@ class WordJobStatusResponse(BaseModel):
     paragraphs_total: int = 0
     paragraphs_completed: int = 0
     error: str | None = None
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 class StoryBeat(BaseModel):

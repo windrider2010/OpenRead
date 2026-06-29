@@ -195,6 +195,11 @@ button {
   border-color: rgba(82, 128, 112, 0.32);
 }
 
+.camera-window.word-mode .page-frame {
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.48);
+}
+
 .camera-preview {
   width: 100%;
   height: 100%;
@@ -300,6 +305,42 @@ button {
   border-radius: 22px;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px rgba(45, 31, 63, 0.14);
+}
+
+.word-target {
+  width: 104px;
+  height: 58px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 3px solid #fff7c7;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 0 0 2px rgba(42, 31, 55, 0.42),
+    0 0 24px rgba(255, 244, 176, 0.48);
+}
+
+.word-target::before,
+.word-target::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: #fff7c7;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(42, 31, 55, 0.32);
+}
+
+.word-target::before {
+  width: 18px;
+  height: 2px;
+}
+
+.word-target::after {
+  width: 2px;
+  height: 18px;
 }
 
 .reading-veil {

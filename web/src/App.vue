@@ -67,7 +67,7 @@ const hasResult = computed(() => Boolean(spokenText.value || audioUrl.value || s
 const actionDisabled = computed(() => requestingCamera.value || isSubmitting.value)
 const modeHint = computed(() =>
   readerMode.value === 'explore_word'
-    ? 'Point to a word with a pen, then take a photo.'
+    ? 'Center one word in the circle, then take a photo.'
     : 'Take a photo of one page for a gentle read-aloud.',
 )
 
@@ -101,7 +101,7 @@ function setReaderMode(mode: ReaderMode) {
   errorMessage.value = ''
   needsManualPlay.value = false
   statusMessage.value =
-    mode === 'explore_word' ? 'Point to a word with a pen.' : 'Ready for a story page.'
+    mode === 'explore_word' ? 'Center one word in the circle.' : 'Ready for a story page.'
 }
 
 async function startCamera() {
@@ -135,7 +135,8 @@ async function startCamera() {
     }
 
     cameraReady.value = true
-    statusMessage.value = 'Place the page in the frame.'
+    statusMessage.value =
+      readerMode.value === 'explore_word' ? 'Center one word in the circle.' : 'Place the page in the frame.'
   } catch (error) {
     const name = error instanceof DOMException ? error.name : ''
     errorMessage.value =
@@ -393,6 +394,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="page-frame" aria-hidden="true"></div>
+        <div
+          v-if="cameraReady && readerMode === 'explore_word'"
+          class="word-target"
+          aria-hidden="true"
+        ></div>
 
         <div v-if="isSubmitting" class="reading-veil" aria-live="polite">
           <div class="reading-pulse"></div>

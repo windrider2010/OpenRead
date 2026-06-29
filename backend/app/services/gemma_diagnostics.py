@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ class GemmaDiagnosticsStore:
         self.ttl_seconds = max(60, ttl_seconds)
         self.log_failures = log_failures
         self.log_successes = log_successes
+        self._lock = threading.Lock()
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def record(self, payload: dict[str, Any]) -> Path | None:
@@ -37,7 +39,22 @@ class GemmaDiagnosticsStore:
             **payload,
         }
         path = self.root_dir / f"{_safe_filename(request_id)}.json"
-        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def update(self, request_id: str, payload: dict[str, Any]) -> Path | None:
+        path = self.root_dir / f"{_safe_filename(request_id)}.json"
+        with self._lock:
+            if not path.is_file():
+                return None
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            _merge_dict(record, payload)
+            record["updated_at"] = datetime.now(UTC).isoformat()
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
     def cleanup_expired(self) -> int:
@@ -56,6 +73,15 @@ class GemmaDiagnosticsStore:
 def _safe_filename(raw: str) -> str:
     cleaned = "".join(char for char in raw if char.isalnum() or char in {"-", "_"})
     return cleaned[:128] or "unknown"
+
+
+def _merge_dict(target: dict[str, Any], updates: dict[str, Any]) -> None:
+    for key, value in updates.items():
+        current = target.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            _merge_dict(current, value)
+        else:
+            target[key] = value
 
 
 def _is_expired(expires_at: str) -> bool:

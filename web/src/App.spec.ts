@@ -78,13 +78,13 @@ const sampleWord: WordExplorerResult = {
   pronunciation_hint: 'brayv',
   kid_explanation: 'Brave means you try even when something feels a little scary.',
   example_sentence: 'The brave rabbit hopped across the bridge.',
-  page_context: 'The pen points to the word near the rabbit.',
+  page_context: 'The word is centered near the rabbit.',
   spoken_script:
     'The word is brave. Brave means you try even when something feels a little scary. The brave rabbit hopped across the bridge.',
   confidence: 0.92,
   diagnostics: {
     mode: 'gemma_vision',
-    pointing_evidence: 'The pen tip touches the word brave.',
+    pointing_evidence: 'The word brave crosses the center of the crop.',
     layout_region: 'center',
     warnings: [],
   },
@@ -231,9 +231,11 @@ describe('App', () => {
     const wrapper = mountAppWithCamera()
     await wrapper.get('button[aria-pressed="false"]').trigger('click')
 
-    expect(wrapper.text()).toContain('Point to a word with a pen')
+    expect(wrapper.text()).toContain('Center one word in the circle')
+    expect(wrapper.find('.word-target').exists()).toBe(false)
 
     await openCamera(wrapper)
+    expect(wrapper.find('.word-target').exists()).toBe(true)
     await capturePage(wrapper)
 
     expect(submitWordRequest).toHaveBeenCalledWith(expect.any(Blob), 'auto', expect.any(Function))
