@@ -64,6 +64,8 @@ class Settings:
     )
     story_compiler_mode: str = os.getenv("STORY_COMPILER_MODE", "gemma_vision")
     story_compiler_timeout_seconds: int = max(1, int(os.getenv("STORY_COMPILER_TIMEOUT_SECONDS", "90")))
+    story_compiler_max_output_tokens: int = max(256, int(os.getenv("STORY_COMPILER_MAX_OUTPUT_TOKENS", "4096")))
+    story_compiler_temperature: float = float(os.getenv("STORY_COMPILER_TEMPERATURE", "0.1"))
     openread_log_gemma_failures: bool = _bool_env("OPENREAD_LOG_GEMMA_FAILURES", True)
     openread_log_gemma_successes: bool = _bool_env("OPENREAD_LOG_GEMMA_SUCCESSES", True)
     openread_gemma_log_ttl_seconds: int = max(60, int(os.getenv("OPENREAD_GEMMA_LOG_TTL_SECONDS", "604800")))

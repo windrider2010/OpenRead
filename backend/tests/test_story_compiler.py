@@ -343,6 +343,8 @@ def test_gemma_story_compiler_uses_current_genai_structured_output_config(monkey
     config_kwargs = captured["config_kwargs"]
     assert config_kwargs["response_mime_type"] == "application/json"
     assert "response_json_schema" in config_kwargs
+    assert config_kwargs["max_output_tokens"] == 4096
+    assert config_kwargs["temperature"] == 0.1
     assert "response_format" not in config_kwargs
 
 

@@ -176,7 +176,7 @@ Important environment variables from `.env.example`:
 - `MAX_UPLOAD_BYTES` and `IMAGE_MAX_SIDE` bound uploaded camera frames before OCR.
 - `MAX_TEXT_CHARS` bounds direct text input and OCR output sent to TTS.
 - `MAX_ACTIVE_READS` controls async read-job worker count and synchronous `/api/read` concurrency.
-- `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, and `STORY_COMPILER_TIMEOUT_SECONDS` control the Gemma story compiler.
+- `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, `STORY_COMPILER_TIMEOUT_SECONDS`, `STORY_COMPILER_MAX_OUTPUT_TOKENS`, and `STORY_COMPILER_TEMPERATURE` control the Gemma story compiler. The output-token cap helps prevent runaway malformed JSON responses from masking user-visible timeouts.
 - `WORD_EXPLORER_MODEL` selects the latency-focused Word Explorer model; it defaults to `gemma-4-26b-a4b-it` while page compilation remains on `GEMMA_MODEL`.
 - `WORD_EXPLORER_CROP_FRACTION` controls the centered fraction retained for Word Explorer. The default `0.62` keeps nearby context while reducing image tokens.
 - `OPENREAD_LOG_GEMMA_FAILURES`, `OPENREAD_LOG_GEMMA_SUCCESSES`, and `OPENREAD_GEMMA_LOG_TTL_SECONDS` control temporary raw Gemma-output diagnostics. By default, success and failure diagnostics are enabled and retained for 7 days.
@@ -337,6 +337,8 @@ WORD_EXPLORER_MODEL=gemma-4-26b-a4b-it
 WORD_EXPLORER_CROP_FRACTION=0.62
 STORY_COMPILER_MODE=gemma_vision
 STORY_COMPILER_TIMEOUT_SECONDS=90
+STORY_COMPILER_MAX_OUTPUT_TOKENS=4096
+STORY_COMPILER_TEMPERATURE=0.1
 OPENREAD_LOG_GEMMA_FAILURES=1
 OPENREAD_LOG_GEMMA_SUCCESSES=1
 OPENREAD_GEMMA_LOG_TTL_SECONDS=604800

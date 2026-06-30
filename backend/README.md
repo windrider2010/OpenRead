@@ -27,6 +27,7 @@ Endpoint notes:
 - Generated audio is served from `/media/audio/{request_id}` as 24 kHz WAV until the media TTL expires or disk-budget cleanup removes it.
 - `lang_hint=en` selects PaddleOCR English. Other values, including `bilingual` and `zh`, select PaddleOCR Chinese for mixed Chinese/English target pages.
 - Raw Gemma text outputs and validation diagnostics are temporarily written to `backend/var/diagnostics/gemma/{request_id}.json` when image story compilation or Word Explorer runs. These diagnostics include per-attempt image encoding, generation, parsing, pipeline, and total timings plus client IP for abuse investigation, but do not include uploaded images.
+- Page story compilation uses `STORY_COMPILER_MAX_OUTPUT_TOKENS` and `STORY_COMPILER_TEMPERATURE` to bound Gemma generation and reduce malformed runaway JSON. Keep the output-token cap high enough for one page, but low enough to avoid multi-minute repeated-character responses.
 - `PRELOAD_MODELS=1` enables startup preload; `PRELOAD_TTS=1` warms Kokoro, while `PRELOAD_OCR=0` keeps PaddleOCR lazy-loaded by default.
 
 Diagnostics:

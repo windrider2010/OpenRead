@@ -3,7 +3,8 @@ param(
     [string]$User = "",
     [string]$Container = "openread",
     [string]$RemoteDiagnosticsDir = "/app/backend/var/diagnostics/gemma",
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [int]$PipelineTimeoutSeconds = 90
 )
 
 Set-StrictMode -Version Latest
@@ -94,12 +95,15 @@ $rows = foreach ($record in $rawPayload.records) {
     $rawOutputs = @()
     $validationErrors = @()
     $warnings = @()
+    $serviceTotalMs = $null
 
     if ($payload) {
         $rawGemmaOutputs = Get-JsonProperty $payload "raw_gemma_outputs"
         $payloadValidationErrors = Get-JsonProperty $payload "validation_errors"
         $storyDiagnostics = Get-JsonProperty $payload "story_diagnostics"
         $storyWarnings = Get-JsonProperty $storyDiagnostics "warnings"
+        $timings = Get-JsonProperty $payload "timings"
+        $serviceTotalMs = Get-JsonProperty $timings "service_total_ms"
         if ($rawGemmaOutputs) {
             $rawOutputs = @($rawGemmaOutputs)
         }
@@ -131,7 +135,29 @@ $rows = foreach ($record in $rawPayload.records) {
         } else {
             0
         }
-        error = if ($payload) { Get-JsonProperty $payload "error" } else { Get-JsonProperty $record "parse_error" }
+        gemma_status = Get-JsonProperty $payload "status"
+        pipeline_status = Get-JsonProperty $payload "pipeline_status"
+        effective_status = if (Get-JsonProperty $payload "pipeline_status") {
+            Get-JsonProperty $payload "pipeline_status"
+        } elseif ($serviceTotalMs -and ([double]$serviceTotalMs -gt ($PipelineTimeoutSeconds * 1000))) {
+            "likely_failed_timeout"
+        } else {
+            Get-JsonProperty $payload "status"
+        }
+        exceeded_pipeline_timeout = if ($serviceTotalMs) {
+            [double]$serviceTotalMs -gt ($PipelineTimeoutSeconds * 1000)
+        } else {
+            $false
+        }
+        service_total_ms = $serviceTotalMs
+        pipeline_error = Get-JsonProperty $payload "pipeline_error"
+        error = if (Get-JsonProperty $payload "pipeline_error") {
+            Get-JsonProperty $payload "pipeline_error"
+        } elseif ($payload) {
+            Get-JsonProperty $payload "error"
+        } else {
+            Get-JsonProperty $record "parse_error"
+        }
     }
 }
 
@@ -139,7 +165,7 @@ $statusCounts = @{}
 $clientIpCounts = @{}
 $modeCounts = @{}
 foreach ($row in $rows) {
-    $statusKey = [string]$row.status
+    $statusKey = [string]$row.effective_status
     $clientIpKey = [string]$row.client_ip
     $modeKey = [string]$row.compiler_mode
     Add-Count $statusCounts $statusKey

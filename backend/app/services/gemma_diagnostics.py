@@ -40,18 +40,34 @@ class GemmaDiagnosticsStore:
         }
         path = self.root_dir / f"{_safe_filename(request_id)}.json"
         with self._lock:
+            existing = _read_json(path)
+            if existing is not None:
+                record = {
+                    **existing,
+                    **record,
+                    "created_at": existing.get("created_at", record["created_at"]),
+                    "expires_at": existing.get("expires_at", record["expires_at"]),
+                }
+                if isinstance(existing.get("timings"), dict) and isinstance(payload.get("timings"), dict):
+                    record["timings"] = dict(existing["timings"])
+                    _merge_dict(record["timings"], payload["timings"])
+                if existing.get("pipeline_status") == "failed" and status != "failed":
+                    record["late_gemma_status"] = status
             path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
     def update(self, request_id: str, payload: dict[str, Any]) -> Path | None:
         path = self.root_dir / f"{_safe_filename(request_id)}.json"
         with self._lock:
-            if not path.is_file():
-                return None
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return None
+            record = _read_json(path)
+            if record is None:
+                created_at = datetime.now(UTC)
+                record = {
+                    "created_at": created_at.isoformat(),
+                    "expires_at": (created_at + timedelta(seconds=self.ttl_seconds)).isoformat(),
+                    "request_id": request_id,
+                    "status": payload.get("pipeline_status", "updated"),
+                }
             _merge_dict(record, payload)
             record["updated_at"] = datetime.now(UTC).isoformat()
             path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -73,6 +89,16 @@ class GemmaDiagnosticsStore:
 def _safe_filename(raw: str) -> str:
     cleaned = "".join(char for char in raw if char.isalnum() or char in {"-", "_"})
     return cleaned[:128] or "unknown"
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _merge_dict(target: dict[str, Any], updates: dict[str, Any]) -> None:

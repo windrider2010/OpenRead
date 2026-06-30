@@ -614,6 +614,8 @@ def create_app(
     app.state.story_compiler_service = story_compiler_service or GemmaStoryCompilerService(
         api_key=settings.gemini_api_key,
         model=settings.gemma_model,
+        max_output_tokens=settings.story_compiler_max_output_tokens,
+        temperature=settings.story_compiler_temperature,
         diagnostics_recorder=app.state.gemma_diagnostics_store,
     )
     app.state.word_explorer_service = word_explorer_service or GemmaWordExplorerService(

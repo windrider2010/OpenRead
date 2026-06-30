@@ -45,10 +45,14 @@ class GemmaStoryCompilerService:
         *,
         api_key: str | None,
         model: str,
+        max_output_tokens: int = 4096,
+        temperature: float = 0.1,
         diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._max_output_tokens = max(256, max_output_tokens)
+        self._temperature = temperature
         self._diagnostics_recorder = diagnostics_recorder
 
     def compile_page(
@@ -231,6 +235,8 @@ class GemmaStoryCompilerService:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_json_schema=StoryCompilation.model_json_schema(),
+                max_output_tokens=self._max_output_tokens,
+                temperature=self._temperature,
             ),
         )
         text = getattr(response, "text", None)
@@ -479,6 +485,8 @@ Task:
 - Read visible printed text faithfully. Correct obvious OCR/layout ordering issues, but do not invent missing printed text.
 - Briefly narrate meaningful illustrations only when they help a child understand the page.
 - Keep caregiver co-reading cues separate from the child-facing spoken script.
+- Keep the JSON compact. For a single page, use at most 8 story beats and 3 caregiver cues.
+- Do not repeat uncertain characters, garbled OCR, or escaped Unicode sequences. If a word is unclear, omit it or mark it in `diagnostics.warnings`.
 - Return only JSON matching the provided schema.
 - Preserve apostrophes, quotation marks, curly quotes, dashes, ellipses, CJK punctuation, and symbols as valid JSON string content.
 - Escape every double quote inside `spoken_script`, `narration`, `source_text`, and `cue` values so the response remains parseable JSON.

@@ -12,6 +12,8 @@ services:
       GEMMA_MODEL: ${GEMMA_MODEL:-gemma-4-31b-it}
       STORY_COMPILER_MODE: ${STORY_COMPILER_MODE:-gemma_vision}
       STORY_COMPILER_TIMEOUT_SECONDS: ${STORY_COMPILER_TIMEOUT_SECONDS:-90}
+      STORY_COMPILER_MAX_OUTPUT_TOKENS: ${STORY_COMPILER_MAX_OUTPUT_TOKENS:-4096}
+      STORY_COMPILER_TEMPERATURE: ${STORY_COMPILER_TEMPERATURE:-0.1}
       KOKORO_DEVICE: ${KOKORO_DEVICE:-cpu}
       PADDLE_USE_GPU: ${PADDLE_USE_GPU:-0}
       PADDLE_ENABLE_MKLDNN: ${PADDLE_ENABLE_MKLDNN:-0}
@@ -24,6 +26,7 @@ services:
     init: true
     volumes:
       - media_data:/app/backend/var/media
+      - diagnostics_data:/app/backend/var/diagnostics
       - model_cache:/root/.cache
       - paddlex_models:/root/.paddlex
     logging:
@@ -34,5 +37,6 @@ services:
 
 volumes:
   media_data:
+  diagnostics_data:
   model_cache:
   paddlex_models:
