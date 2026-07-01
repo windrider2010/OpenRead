@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import threading
 import time
+import wave
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -39,7 +40,7 @@ class FakeTtsService:
 
     def synthesize_text(self, text: str, lang_hint: str | None = None) -> SynthesizedAudio:
         self.calls.append(text)
-        return SynthesizedAudio(audio_bytes=b"RIFFfakewav", mime_type="audio/wav", sample_rate=24000)
+        return SynthesizedAudio(audio_bytes=_tiny_wav_bytes(), mime_type="audio/wav", sample_rate=24000)
 
     def preload(self) -> None:
         self.preloaded = True
@@ -129,6 +130,20 @@ def _sample_story(*, mode: CompilerMode = "gemma_vision", ocr_used: bool = False
     return StoryCompilation(
         title="Moon Page",
         spoken_script="Hello world. The moon glows over the little boat.",
+        tts_segments=[
+            {
+                "segment_id": "segment-1",
+                "text": "Hello world.",
+                "kind": "text",
+                "after_beat_id": "text-1",
+            },
+            {
+                "segment_id": "segment-2",
+                "text": "The moon glows over the little boat.",
+                "kind": "illustration",
+                "after_beat_id": "illustration-1",
+            },
+        ],
         beats=[
             {
                 "beat_id": "text-1",
@@ -174,10 +189,27 @@ def _sample_word() -> WordExplorerResult:
         kid_explanation="Brave means you try even when something feels a little scary.",
         example_sentence="The brave rabbit hopped across the bridge.",
         page_context="The word is centered in a sentence near the fox.",
-        spoken_script=(
-            "The word is brave. Brave means you try even when something feels a little scary. "
-            "The brave rabbit hopped across the bridge."
-        ),
+        spoken_script="brave. Brave means you try even when something feels a little scary. The brave rabbit hopped across the bridge.",
+        tts_segments=[
+            {
+                "segment_id": "word",
+                "text": "brave",
+                "kind": "word",
+                "after_beat_id": None,
+            },
+            {
+                "segment_id": "meaning",
+                "text": "Brave means you try even when something feels a little scary.",
+                "kind": "meaning",
+                "after_beat_id": None,
+            },
+            {
+                "segment_id": "example",
+                "text": "The brave rabbit hopped across the bridge.",
+                "kind": "example",
+                "after_beat_id": None,
+            },
+        ],
         confidence=0.92,
         diagnostics={
             "mode": "gemma_vision",
@@ -204,6 +236,16 @@ def _sample_image_bytes() -> bytes:
     buffer = io.BytesIO()
     image = Image.new("RGB", (120, 60), color=(255, 255, 255))
     image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def _tiny_wav_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24000)
+        wav_file.writeframes(b"\x00\x00")
     return buffer.getvalue()
 
 
@@ -310,8 +352,8 @@ def test_read_endpoint_sends_only_spoken_script_to_tts(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert tts.calls == ["Hello world. The moon glows over the little boat."]
-    assert "Ask what the child thinks" not in tts.calls[0]
+    assert tts.calls == ["Hello world.", "The moon glows over the little boat."]
+    assert all("Ask what the child thinks" not in call for call in tts.calls)
 
 
 def test_read_endpoint_stream_mode_returns_audio_and_link(tmp_path: Path) -> None:
@@ -323,7 +365,7 @@ def test_read_endpoint_stream_mode_returns_audio_and_link(tmp_path: Path) -> Non
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/wav")
     assert response.headers["link"].startswith("<http://testserver/media/audio/")
-    assert response.content == b"RIFFfakewav"
+    assert response.content.startswith(b"RIFF")
 
 
 def test_read_job_endpoint_returns_completed_status_audio_url_and_story(tmp_path: Path) -> None:
@@ -379,7 +421,7 @@ def test_read_job_endpoint_surfaces_story_before_audio_completion(tmp_path: Path
         assert payload["stage"] == "tts"
         assert "moon glows" in payload["text"]
         assert payload["story"]["beats"][0]["layout_region"] == "top-left"
-        assert payload["paragraphs_total"] == 1
+        assert payload["paragraphs_total"] == 2
         assert payload["paragraphs_completed"] == 0
 
         blocking_tts.release.set()
@@ -523,7 +565,7 @@ def test_audio_asset_endpoint_serves_cached_wav(tmp_path: Path) -> None:
     request_id = read_response.json()["request_id"]
     response = client.get(f"/media/audio/{request_id}")
     assert response.status_code == 200
-    assert response.content == b"RIFFfakewav"
+    assert response.content.startswith(b"RIFF")
 
 
 def test_word_job_endpoint_returns_completed_status_audio_url_and_word(tmp_path: Path) -> None:
@@ -562,8 +604,12 @@ def test_word_job_endpoint_returns_completed_status_audio_url_and_word(tmp_path:
     assert payload["timings"]["gemma_pipeline_ms"] >= 0
     assert payload["timings"]["tts_ms"] >= 0
     assert payload["timings"]["total_ms"] >= payload["timings"]["tts_ms"]
-    assert tts.calls == [_sample_word().spoken_script]
-    assert "pointing_evidence" not in tts.calls[0]
+    assert tts.calls == [
+        "brave",
+        "Brave means you try even when something feels a little scary.",
+        "The brave rabbit hopped across the bridge.",
+    ]
+    assert all("pointing_evidence" not in call for call in tts.calls)
     assert word_service.request_ids == [request_id]
     assert word_service.client_ips == ["203.0.113.45"]
     assert word_service.image_sizes == [(60, 30)]

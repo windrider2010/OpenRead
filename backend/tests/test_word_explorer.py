@@ -54,6 +54,15 @@ def test_gemma_word_explorer_retries_invalid_structured_output() -> None:
     result = explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
 
     assert result.selected_word == "brave"
+    assert result.spoken_script == (
+        "brave. Brave means you try even when something feels a little scary. "
+        "The brave rabbit hopped across the bridge."
+    )
+    assert [segment.text for segment in result.tts_segments] == [
+        "brave",
+        "Brave means you try even when something feels a little scary.",
+        "The brave rabbit hopped across the bridge.",
+    ]
     assert len(explorer.prompts) == 2
     assert "Validation error" in explorer.prompts[1]
 
@@ -85,6 +94,11 @@ def test_gemma_word_explorer_repairs_invalid_trailing_commas() -> None:
 
     assert result.selected_word == "moon"
     assert result.kid_explanation.startswith("A moon")
+    assert [segment.text for segment in result.tts_segments] == [
+        "moon",
+        "A moon is a bright round thing we see in the night sky.",
+        "The moon shines at bedtime.",
+    ]
 
 
 def test_gemma_word_explorer_falls_back_to_text_like_output_after_retry() -> None:

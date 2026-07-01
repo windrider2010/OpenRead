@@ -42,7 +42,7 @@ from app.services.story_compiler import (
     normalize_compiler_provider,
     story_from_text,
 )
-from app.services.tts_service import KokoroTtsService, TtsService, synthesize_text_in_paragraphs
+from app.services.tts_service import KokoroTtsService, TtsService, synthesize_text_in_paragraphs, synthesize_text_segments
 from app.services.word_explorer import (
     CerebrasWordExplorerService,
     GemmaWordExplorerService,
@@ -257,10 +257,12 @@ class ReadJobManager:
                     client_ip,
                 )
                 source_text = story.spoken_script
+                tts_segments = [segment.text for segment in story.tts_segments]
                 story_timing_key = "gemma_pipeline_ms"
             else:
                 story = story_from_text(input_text or "", mode=compiler_mode)
                 source_text = story.spoken_script
+                tts_segments = [segment.text for segment in story.tts_segments]
                 story_timing_key = "text_prepare_ms"
             with self._lock:
                 timing_job = self._jobs.get(request_id)
@@ -294,9 +296,9 @@ class ReadJobManager:
 
             tts_started = perf_counter()
             audio = await asyncio.to_thread(
-                synthesize_text_in_paragraphs,
+                synthesize_text_segments,
                 app.state.tts_service,
-                source_text,
+                tts_segments,
                 lang_hint,
                 progress_callback=on_tts_progress,
             )
@@ -489,6 +491,7 @@ class WordJobManager:
                 if timing_job is not None:
                     timing_job.timings["gemma_pipeline_ms"] = _elapsed_ms(gemma_started)
             source_text = word.spoken_script
+            tts_segments = [segment.text for segment in word.tts_segments]
             if not source_text:
                 raise ValueError("No word explanation was produced from the submitted input.")
             max_text_chars = app.state.settings.max_text_chars
@@ -516,9 +519,9 @@ class WordJobManager:
 
             tts_started = perf_counter()
             audio = await asyncio.to_thread(
-                synthesize_text_in_paragraphs,
+                synthesize_text_segments,
                 app.state.tts_service,
-                source_text,
+                tts_segments,
                 lang_hint,
                 progress_callback=on_tts_progress,
             )
@@ -766,8 +769,10 @@ def create_app(
                     client_ip,
                 )
                 source_text = story.spoken_script
+                tts_segments = [segment.text for segment in story.tts_segments]
             else:
                 source_text = (text or "").strip()
+                tts_segments = None
 
             if not source_text:
                 raise HTTPException(status_code=422, detail="No readable text was produced from the submitted input.")
@@ -777,12 +782,20 @@ def create_app(
                     detail=f"Text exceeds the {settings.max_text_chars} character limit.",
                 )
 
-            audio = await asyncio.to_thread(
-                synthesize_text_in_paragraphs,
-                app.state.tts_service,
-                source_text,
-                lang_hint,
-            )
+            if tts_segments is not None:
+                audio = await asyncio.to_thread(
+                    synthesize_text_segments,
+                    app.state.tts_service,
+                    tts_segments,
+                    lang_hint,
+                )
+            else:
+                audio = await asyncio.to_thread(
+                    synthesize_text_in_paragraphs,
+                    app.state.tts_service,
+                    source_text,
+                    lang_hint,
+                )
             asset = app.state.media_store.store_audio(
                 request_id=request_id,
                 audio_bytes=audio.audio_bytes,

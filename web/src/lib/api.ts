@@ -2,6 +2,7 @@ export type CompilerMode = 'gemma_vision' | 'ocr_assisted'
 export type StoryBeatKind = 'text' | 'illustration'
 export type CaregiverCuePurpose = 'prediction' | 'emotion' | 'vocabulary' | 'engagement'
 export type ReaderMode = 'read_page' | 'explore_word'
+export type TtsSegmentKind = 'story' | 'text' | 'illustration' | 'word' | 'meaning' | 'example'
 
 export interface StoryBeat {
   beat_id: string
@@ -26,9 +27,17 @@ export interface StoryDiagnostics {
   warnings: string[]
 }
 
+export interface TtsSegment {
+  segment_id: string
+  text: string
+  kind: TtsSegmentKind
+  after_beat_id: string | null
+}
+
 export interface StoryCompilation {
   title: string | null
   spoken_script: string
+  tts_segments: TtsSegment[]
   beats: StoryBeat[]
   caregiver_cues: CaregiverCue[]
   diagnostics: StoryDiagnostics
@@ -80,6 +89,7 @@ export interface WordExplorerResult {
   example_sentence: string | null
   page_context: string | null
   spoken_script: string
+  tts_segments: TtsSegment[]
   confidence: number
   diagnostics: WordExplorerDiagnostics
 }

@@ -8,6 +8,7 @@ CompilerMode = Literal["gemma_vision", "ocr_assisted"]
 CompilerProvider = Literal["google_genai", "cerebras"]
 ReadJobStage = Literal["queued", "story_compile", "ocr", "tts", "completed", "failed"]
 WordJobStage = Literal["queued", "word_detect", "tts", "completed", "failed"]
+TtsSegmentKind = Literal["story", "text", "illustration", "word", "meaning", "example"]
 
 
 class OcrBlock(BaseModel):
@@ -64,6 +65,13 @@ class WordExplorerDiagnostics(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class TtsSegment(BaseModel):
+    segment_id: str
+    text: str
+    kind: TtsSegmentKind = "story"
+    after_beat_id: str | None = None
+
+
 class WordExplorerResult(BaseModel):
     selected_word: str
     normalized_word: str | None = None
@@ -74,6 +82,7 @@ class WordExplorerResult(BaseModel):
     example_sentence: str | None = None
     page_context: str | None = None
     spoken_script: str
+    tts_segments: list[TtsSegment] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     diagnostics: WordExplorerDiagnostics
 
@@ -119,6 +128,7 @@ class StoryDiagnostics(BaseModel):
 class StoryCompilation(BaseModel):
     title: str | None = None
     spoken_script: str
+    tts_segments: list[TtsSegment] = Field(default_factory=list)
     beats: list[StoryBeat] = Field(default_factory=list)
     caregiver_cues: list[CaregiverCue] = Field(default_factory=list)
     diagnostics: StoryDiagnostics

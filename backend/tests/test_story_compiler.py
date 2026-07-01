@@ -65,6 +65,26 @@ def _special_story_json() -> str:
     story = StoryCompilation(
         title="Balloon Page",
         spoken_script='The bear looked up. “Where did my balloon go?” 树上有一个红气球… ✨',
+        tts_segments=[
+            {
+                "segment_id": "segment-1",
+                "text": "The bear looked up.",
+                "kind": "illustration",
+                "after_beat_id": "illustration-1",
+            },
+            {
+                "segment_id": "segment-2",
+                "text": "\u201cWhere did my balloon go?\u201d",
+                "kind": "text",
+                "after_beat_id": "text-1",
+            },
+            {
+                "segment_id": "segment-3",
+                "text": "\u6811\u4e0a\u6709\u4e00\u4e2a\u7ea2\u6c14\u7403\u2026 \u2728",
+                "kind": "text",
+                "after_beat_id": "text-2",
+            },
+        ],
         beats=[
             {
                 "beat_id": "illustration-1",
@@ -132,6 +152,51 @@ def test_gemma_story_compiler_extracts_json_wrapped_in_text() -> None:
 
     assert story.spoken_script == "Hello world."
     assert len(compiler.prompts) == 1
+
+
+def test_gemma_story_compiler_uses_returned_tts_segments_as_spoken_script() -> None:
+    payload = StoryCompilation(
+        title=None,
+        spoken_script="Ignored by OpenRead after segment validation.",
+        tts_segments=[
+            {"segment_id": "a", "text": "The bear looked up.", "kind": "illustration", "after_beat_id": "picture-1"},
+            {"segment_id": "b", "text": "Where is my balloon?", "kind": "text", "after_beat_id": "text-1"},
+        ],
+        beats=[
+            {
+                "beat_id": "picture-1",
+                "kind": "illustration",
+                "narration": "The bear looked up.",
+                "source_text": None,
+                "layout_region": "center",
+                "confidence": 0.95,
+            },
+            {
+                "beat_id": "text-1",
+                "kind": "text",
+                "narration": "Where is my balloon?",
+                "source_text": "Where is my balloon?",
+                "layout_region": "speech-bubble-right",
+                "confidence": 0.93,
+            },
+        ],
+        caregiver_cues=[],
+        diagnostics={
+            "mode": "gemma_vision",
+            "layout_notes": "Read image clue before speech bubble.",
+            "ocr_used": False,
+            "warnings": [],
+        },
+    )
+    compiler = FakeGemmaCompiler([payload.model_dump_json()])
+
+    story = compiler.compile_page(
+        image=Image.new("RGB", (20, 20), color="white"),
+        mode="gemma_vision",
+    )
+
+    assert story.spoken_script == "The bear looked up. Where is my balloon?"
+    assert [segment.text for segment in story.tts_segments] == ["The bear looked up.", "Where is my balloon?"]
 
 
 def test_gemma_story_compiler_repairs_invalid_trailing_commas() -> None:

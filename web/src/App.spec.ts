@@ -27,6 +27,14 @@ const stopTrack = vi.fn()
 const sampleStory: StoryCompilation = {
   title: 'Moon Page',
   spoken_script: 'hello world',
+  tts_segments: [
+    {
+      segment_id: 'segment-1',
+      text: 'hello world',
+      kind: 'text',
+      after_beat_id: 'text-1',
+    },
+  ],
   beats: [
     {
       beat_id: 'text-1',
@@ -81,6 +89,26 @@ const sampleWord: WordExplorerResult = {
   page_context: 'The word is centered near the rabbit.',
   spoken_script:
     'The word is brave. Brave means you try even when something feels a little scary. The brave rabbit hopped across the bridge.',
+  tts_segments: [
+    {
+      segment_id: 'word',
+      text: 'brave',
+      kind: 'word',
+      after_beat_id: null,
+    },
+    {
+      segment_id: 'meaning',
+      text: 'Brave means you try even when something feels a little scary.',
+      kind: 'meaning',
+      after_beat_id: null,
+    },
+    {
+      segment_id: 'example',
+      text: 'The brave rabbit hopped across the bridge.',
+      kind: 'example',
+      after_beat_id: null,
+    },
+  ],
   confidence: 0.92,
   diagnostics: {
     mode: 'gemma_vision',

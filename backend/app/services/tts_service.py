@@ -255,6 +255,22 @@ def synthesize_text_in_paragraphs(
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> SynthesizedAudio:
     paragraphs = split_text_into_paragraphs(text)
+    return synthesize_text_segments(
+        tts_service,
+        paragraphs,
+        lang_hint,
+        progress_callback=progress_callback,
+    )
+
+
+def synthesize_text_segments(
+    tts_service: TtsService,
+    segments: list[str],
+    lang_hint: str | None = None,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> SynthesizedAudio:
+    paragraphs = [segment.strip() for segment in segments if segment.strip()]
     if not paragraphs:
         raise RuntimeError("Cannot synthesize empty text.")
 

@@ -13,7 +13,7 @@ import httpx
 from PIL import Image
 from pydantic import ValidationError
 
-from app.models import CompilerMode, CompilerProvider, StoryCompilation
+from app.models import CompilerMode, CompilerProvider, StoryCompilation, TtsSegment
 from app.services.ocr_service import RecognizedPage
 
 logger = logging.getLogger(__name__)
@@ -374,6 +374,14 @@ def _story_from_plain_text(
     return StoryCompilation(
         title=None,
         spoken_script=text,
+        tts_segments=[
+            {
+                "segment_id": "segment-1",
+                "text": text,
+                "kind": "story",
+                "after_beat_id": "text-1",
+            }
+        ],
         beats=[
             {
                 "beat_id": "text-1",
@@ -539,12 +547,71 @@ def _find_text_value(value: object) -> str | None:
 
 def _validated_compilation(compiled: StoryCompilation, *, expected_mode: CompilerMode) -> StoryCompilation:
     spoken_script = compiled.spoken_script.strip()
-    if not spoken_script:
-        raise ValueError("spoken_script is required.")
+    has_segment_text = any(segment.text.strip() for segment in compiled.tts_segments)
+    if not spoken_script and not has_segment_text:
+        raise ValueError("spoken_script or tts_segments is required.")
     if not compiled.beats:
         raise ValueError("At least one story beat is required.")
+    tts_segments = _validated_story_tts_segments(compiled)
+    spoken_script = _join_tts_segment_texts(tts_segments)
+    if not spoken_script:
+        raise ValueError("spoken_script is required.")
     diagnostics = compiled.diagnostics.model_copy(update={"mode": expected_mode})
-    return compiled.model_copy(update={"spoken_script": spoken_script, "diagnostics": diagnostics})
+    return compiled.model_copy(
+        update={
+            "spoken_script": spoken_script,
+            "tts_segments": tts_segments,
+            "diagnostics": diagnostics,
+        }
+    )
+
+
+def _validated_story_tts_segments(compiled: StoryCompilation) -> list[TtsSegment]:
+    segments: list[TtsSegment] = []
+    for index, segment in enumerate(compiled.tts_segments, start=1):
+        text = segment.text.strip()
+        if not text:
+            continue
+        segment_id = segment.segment_id.strip() or f"segment-{index}"
+        segments.append(
+            segment.model_copy(
+                update={
+                    "segment_id": segment_id,
+                    "text": text,
+                }
+            )
+        )
+    if segments:
+        return segments
+
+    beat_segments: list[TtsSegment] = []
+    for index, beat in enumerate(compiled.beats, start=1):
+        narration = beat.narration.strip()
+        if not narration:
+            continue
+        beat_segments.append(
+            TtsSegment(
+                segment_id=f"beat-{index}",
+                text=narration,
+                kind=beat.kind,
+                after_beat_id=beat.beat_id,
+            )
+        )
+    if beat_segments:
+        return beat_segments
+
+    return [
+        TtsSegment(
+            segment_id="segment-1",
+            text=compiled.spoken_script.strip(),
+            kind="story",
+            after_beat_id=None,
+        )
+    ]
+
+
+def _join_tts_segment_texts(segments: list[TtsSegment]) -> str:
+    return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
 
 def _image_to_jpeg_bytes(image: Image.Image) -> bytes:
@@ -613,6 +680,9 @@ Language hint: {lang_hint or "bilingual"}
 
 Output rules:
 - `spoken_script` is the exact child-facing text that will be sent to text-to-speech.
+- `tts_segments` are the same child-facing text split into natural audio chunks, in speaking order.
+- Each `tts_segments` item should be a complete semantic unit, such as one speech bubble, one printed text beat, or one brief illustration narration. Do not use fixed character counts.
+- `tts_segments` must exclude caregiver cues and must join back to the same meaning as `spoken_script`.
 - `beats` must be in the order they should be read aloud.
 - `kind=text` beats should preserve visible page wording in `source_text`.
 - `kind=illustration` beats should be short, concrete, and based only on visible illustration details.

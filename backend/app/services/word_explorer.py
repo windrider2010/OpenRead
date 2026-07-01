@@ -9,8 +9,7 @@ import httpx
 from PIL import Image
 from pydantic import ValidationError
 
-from app.models import CompilerProvider
-from app.models import WordExplorerResult
+from app.models import CompilerProvider, TtsSegment, WordExplorerResult
 from app.services.story_compiler import (
     StoryCompilerError,
     _extract_text_like_output,
@@ -346,13 +345,14 @@ def _parse_word_json(raw: str) -> WordExplorerResult:
 def _validated_word_result(result: WordExplorerResult) -> WordExplorerResult:
     selected_word = result.selected_word.strip()
     kid_explanation = result.kid_explanation.strip()
-    spoken_script = result.spoken_script.strip()
     if not selected_word:
         raise ValueError("selected_word is required.")
     if selected_word.lower() in {"unknown", "unclear", "not sure", "n/a"}:
         raise ValueError("selected_word must identify the pointed printed word.")
     if not kid_explanation:
         raise ValueError("kid_explanation is required.")
+    tts_segments = _word_tts_segments(result, selected_word=selected_word, kid_explanation=kid_explanation)
+    spoken_script = _join_word_tts_segments(tts_segments)
     if not spoken_script:
         raise ValueError("spoken_script is required.")
     return result.model_copy(
@@ -360,8 +360,37 @@ def _validated_word_result(result: WordExplorerResult) -> WordExplorerResult:
             "selected_word": selected_word,
             "kid_explanation": kid_explanation,
             "spoken_script": spoken_script,
+            "tts_segments": tts_segments,
         }
     )
+
+
+def _word_tts_segments(
+    result: WordExplorerResult,
+    *,
+    selected_word: str,
+    kid_explanation: str,
+) -> list[TtsSegment]:
+    segments = [
+        TtsSegment(segment_id="word", text=selected_word, kind="word", after_beat_id=None),
+        TtsSegment(segment_id="meaning", text=kid_explanation, kind="meaning", after_beat_id=None),
+    ]
+    example_sentence = (result.example_sentence or "").strip()
+    if example_sentence:
+        segments.append(TtsSegment(segment_id="example", text=example_sentence, kind="example", after_beat_id=None))
+    return segments
+
+
+def _join_word_tts_segments(segments: list[TtsSegment]) -> str:
+    parts: list[str] = []
+    for index, segment in enumerate(segments):
+        text = segment.text.strip()
+        if not text:
+            continue
+        if index == 0 and segment.kind == "word" and text[-1] not in ".!?。！？":
+            text = f"{text}."
+        parts.append(text)
+    return " ".join(parts).strip()
 
 
 def _is_unclear_word_error(exc: Exception) -> bool:
@@ -373,6 +402,14 @@ def _word_result_from_text_like_output(raw: str) -> WordExplorerResult | None:
     text = _extract_text_like_output(raw)
     if text is None:
         return None
+    segments = [
+        TtsSegment(
+            segment_id="meaning",
+            text=text,
+            kind="meaning",
+            after_beat_id=None,
+        )
+    ]
     return WordExplorerResult(
         selected_word="center word",
         normalized_word=None,
@@ -383,6 +420,7 @@ def _word_result_from_text_like_output(raw: str) -> WordExplorerResult | None:
         example_sentence=None,
         page_context=None,
         spoken_script=text,
+        tts_segments=segments,
         confidence=0.3,
         diagnostics={
             "mode": "gemma_vision",
@@ -421,7 +459,8 @@ Output rules:
 - `kid_explanation` should be one or two simple sentences.
 - `example_sentence` should be short and use the word naturally when useful.
 - `page_context` should briefly say how the word appears on this page when useful.
-- `spoken_script` is exactly what should be sent to text-to-speech. It should say the word, then the kid-friendly meaning, and may include the example sentence.
+- `spoken_script` should say the word, then the kid-friendly meaning, and may include the example sentence.
+- `tts_segments` may be returned, but OpenRead will normalize it to predictable audio chunks: word first, meaning second, example third.
 - `confidence` must be 0 to 1.
 - `diagnostics.mode` must be "gemma_vision".
 - `diagnostics.pointing_evidence` should briefly describe why you chose that word, such as "the word crosses the exact center of the crop".
