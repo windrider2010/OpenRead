@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from app.config import get_settings
 from app.models import (
     CompilerMode,
+    CompilerProvider,
     HealthResponse,
     OcrBlock,
     OcrResponse,
@@ -33,14 +34,21 @@ from app.services.image_pipeline import ImageValidationError, crop_center_region
 from app.services.media_store import MediaStore
 from app.services.ocr_service import OcrService, PaddleOcrService
 from app.services.story_compiler import (
+    CerebrasStoryCompilerService,
     GemmaStoryCompilerService,
     StoryCompilerError,
     StoryCompilerService,
     normalize_compiler_mode,
+    normalize_compiler_provider,
     story_from_text,
 )
 from app.services.tts_service import KokoroTtsService, TtsService, synthesize_text_in_paragraphs
-from app.services.word_explorer import GemmaWordExplorerService, WordExplorerError, WordExplorerService
+from app.services.word_explorer import (
+    CerebrasWordExplorerService,
+    GemmaWordExplorerService,
+    WordExplorerError,
+    WordExplorerService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,7 @@ class ReadJob:
     input_text: str | None = None
     lang_hint: str | None = None
     compiler_mode: CompilerMode = "gemma_vision"
+    compiler_provider: CompilerProvider = "cerebras"
     client_ip: str | None = None
     text: str | None = None
     story: StoryCompilation | None = None
@@ -125,6 +134,7 @@ class ReadJobManager:
         text: str | None,
         lang_hint: str | None,
         compiler_mode: CompilerMode,
+        compiler_provider: CompilerProvider,
         client_ip: str | None,
         request_started_perf: float | None = None,
         normalization_ms: float = 0.0,
@@ -140,6 +150,7 @@ class ReadJobManager:
             input_text=text,
             lang_hint=lang_hint,
             compiler_mode=compiler_mode,
+            compiler_provider=compiler_provider,
             client_ip=client_ip,
             request_started_perf=request_started_perf or perf_counter(),
             enqueued_perf=perf_counter(),
@@ -224,6 +235,7 @@ class ReadJobManager:
             input_text = job.input_text
             lang_hint = job.lang_hint
             compiler_mode = job.compiler_mode
+            compiler_provider = job.compiler_provider
             client_ip = job.client_ip
             request_started_perf = job.request_started_perf
 
@@ -235,7 +247,15 @@ class ReadJobManager:
                     if compiling_job is not None:
                         compiling_job.stage = "story_compile"
                         compiling_job.updated_at = datetime.now(UTC)
-                story = await _compile_story_for_image(app, image, compiler_mode, lang_hint, request_id, client_ip)
+                story = await _compile_story_for_image(
+                    app,
+                    image,
+                    compiler_mode,
+                    compiler_provider,
+                    lang_hint,
+                    request_id,
+                    client_ip,
+                )
                 source_text = story.spoken_script
                 story_timing_key = "gemma_pipeline_ms"
             else:
@@ -568,6 +588,7 @@ def create_app(
     settings=None,
     ocr_service: OcrService | None = None,
     story_compiler_service: StoryCompilerService | None = None,
+    cerebras_story_compiler_service: StoryCompilerService | None = None,
     word_explorer_service: WordExplorerService | None = None,
     tts_service: TtsService | None = None,
     media_store: MediaStore | None = None,
@@ -618,11 +639,39 @@ def create_app(
         temperature=settings.story_compiler_temperature,
         diagnostics_recorder=app.state.gemma_diagnostics_store,
     )
-    app.state.word_explorer_service = word_explorer_service or GemmaWordExplorerService(
-        api_key=settings.gemini_api_key,
-        model=settings.word_explorer_model,
-        diagnostics_recorder=app.state.gemma_diagnostics_store,
+    app.state.cerebras_story_compiler_service = (
+        cerebras_story_compiler_service
+        or (
+            story_compiler_service
+            if story_compiler_service is not None
+            else CerebrasStoryCompilerService(
+                api_key=settings.cerebras_api_key,
+                model=settings.cerebras_gemma_model,
+                base_url=settings.cerebras_base_url,
+                max_output_tokens=settings.story_compiler_max_output_tokens,
+                temperature=settings.story_compiler_temperature,
+                timeout_seconds=settings.story_compiler_timeout_seconds,
+                diagnostics_recorder=app.state.gemma_diagnostics_store,
+            )
+        )
     )
+    resolved_word_provider = normalize_compiler_provider(None, settings.word_explorer_provider)
+    if word_explorer_service is not None:
+        app.state.word_explorer_service = word_explorer_service
+    elif resolved_word_provider == "cerebras":
+        app.state.word_explorer_service = CerebrasWordExplorerService(
+            api_key=settings.cerebras_api_key,
+            model=settings.cerebras_word_explorer_model,
+            base_url=settings.cerebras_base_url,
+            timeout_seconds=settings.story_compiler_timeout_seconds,
+            diagnostics_recorder=app.state.gemma_diagnostics_store,
+        )
+    else:
+        app.state.word_explorer_service = GemmaWordExplorerService(
+            api_key=settings.gemini_api_key,
+            model=settings.word_explorer_model,
+            diagnostics_recorder=app.state.gemma_diagnostics_store,
+        )
     app.state.tts_service = tts_service or KokoroTtsService(
         default_en_voice=settings.default_en_voice,
         default_zh_voice=settings.default_zh_voice,
@@ -676,6 +725,7 @@ def create_app(
         text: str | None = Form(None),
         lang_hint: str | None = Form(None),
         compiler_mode: str | None = Form(None),
+        compiler_provider: str | None = Form(None),
         response_mode: str = Form("json"),
     ) -> ReadResponse | StreamingResponse:
         response_mode = response_mode.strip().lower()
@@ -687,6 +737,10 @@ def create_app(
             raise HTTPException(status_code=422, detail="Provide only one of `image` or `text`, not both.")
         try:
             resolved_compiler_mode = normalize_compiler_mode(compiler_mode, settings.story_compiler_mode)
+            resolved_compiler_provider = normalize_compiler_provider(
+                compiler_provider,
+                settings.story_compiler_provider,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not app.state.read_gate.try_acquire():
@@ -706,6 +760,7 @@ def create_app(
                     app,
                     normalized.image,
                     resolved_compiler_mode,
+                    resolved_compiler_provider,
                     lang_hint,
                     request_id,
                     client_ip,
@@ -762,6 +817,7 @@ def create_app(
         text: str | None = Form(None),
         lang_hint: str | None = Form(None),
         compiler_mode: str | None = Form(None),
+        compiler_provider: str | None = Form(None),
     ) -> ReadJobAcceptedResponse:
         request_started_perf = perf_counter()
         if image is None and not (text or "").strip():
@@ -770,6 +826,10 @@ def create_app(
             raise HTTPException(status_code=422, detail="Provide only one of `image` or `text`, not both.")
         try:
             resolved_compiler_mode = normalize_compiler_mode(compiler_mode, settings.story_compiler_mode)
+            resolved_compiler_provider = normalize_compiler_provider(
+                compiler_provider,
+                settings.story_compiler_provider,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -794,6 +854,7 @@ def create_app(
             text=input_text,
             lang_hint=lang_hint,
             compiler_mode=resolved_compiler_mode,
+            compiler_provider=resolved_compiler_provider,
             client_ip=_client_ip(request),
             request_started_perf=request_started_perf,
             normalization_ms=normalization_ms,
@@ -889,6 +950,7 @@ async def _compile_story_for_image(
     app: FastAPI,
     image: object,
     compiler_mode: CompilerMode,
+    compiler_provider: CompilerProvider,
     lang_hint: str | None,
     request_id: str,
     client_ip: str | None,
@@ -896,10 +958,15 @@ async def _compile_story_for_image(
     ocr_page = None
     if compiler_mode == "ocr_assisted":
         ocr_page = await asyncio.to_thread(app.state.ocr_service.recognize, image, lang_hint)
+    compiler_service = (
+        app.state.cerebras_story_compiler_service
+        if compiler_provider == "cerebras"
+        else app.state.story_compiler_service
+    )
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(
-                app.state.story_compiler_service.compile_page,
+                compiler_service.compile_page,
                 image=image,
                 mode=compiler_mode,
                 lang_hint=lang_hint,

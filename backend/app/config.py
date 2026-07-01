@@ -57,11 +57,17 @@ class Settings:
     espeak_ng_path: str | None = os.getenv("ESPEAK_NG_PATH") or None
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
     gemma_model: str = os.getenv("GEMMA_MODEL", "gemma-4-31b-it")
+    cerebras_api_key: str | None = os.getenv("CEREBRAS_API_KEY") or None
+    cerebras_base_url: str = os.getenv("CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1").rstrip("/")
+    cerebras_gemma_model: str = os.getenv("CEREBRAS_GEMMA_MODEL", "gemma-4-31b")
     word_explorer_model: str = os.getenv("WORD_EXPLORER_MODEL", "gemma-4-26b-a4b-it")
+    cerebras_word_explorer_model: str = os.getenv("CEREBRAS_WORD_EXPLORER_MODEL", "gemma-4-31b")
+    word_explorer_provider: str = os.getenv("WORD_EXPLORER_PROVIDER", "cerebras")
     word_explorer_crop_fraction: float = min(
         1.0,
         max(0.2, float(os.getenv("WORD_EXPLORER_CROP_FRACTION", "0.62"))),
     )
+    story_compiler_provider: str = os.getenv("STORY_COMPILER_PROVIDER", "cerebras")
     story_compiler_mode: str = os.getenv("STORY_COMPILER_MODE", "gemma_vision")
     story_compiler_timeout_seconds: int = max(1, int(os.getenv("STORY_COMPILER_TIMEOUT_SECONDS", "90")))
     story_compiler_max_output_tokens: int = max(256, int(os.getenv("STORY_COMPILER_MAX_OUTPUT_TOKENS", "4096")))

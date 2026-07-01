@@ -60,7 +60,7 @@ BibTeX:
 ## What It Does
 
 - Captures a page photo from the phone camera in a one-screen Vue app.
-- Uses Gemma 4 through the Google GenAI SDK as a page-level story compiler.
+- Uses Gemma 4 through Cerebras Chat Completions by default, with a Google GenAI fallback selectable by environment variable.
 - Reconstructs reading order for non-linear picture-book layouts.
 - Preserves visible text where possible and adds brief picture narration only when useful.
 - Keeps caregiver cues on screen and out of the spoken audio.
@@ -82,7 +82,7 @@ OpenRead/
 
 - Python 3.12 managed with `uv`.
 - Node 22 or another current Node release compatible with Vite 7.
-- A Google GenAI API key in `GEMINI_API_KEY` for image-based story compilation.
+- A Cerebras API key in `CEREBRAS_API_KEY` for default image-based story compilation and Word Explorer. Google GenAI remains available with `GEMINI_API_KEY` when `STORY_COMPILER_PROVIDER=google_genai` or `WORD_EXPLORER_PROVIDER=google_genai`.
 - Local, non-Docker TTS requires eSpeak NG because Kokoro uses phonemizer for English text. Linux hosts can install the `espeak-ng` package. On Windows, install eSpeak NG and set `ESPEAK_NG_PATH` to the install directory, the library file, or the `espeak-ng-data` directory if it is not auto-detected.
 - Docker builds install eSpeak NG and the Linux shared libraries required by PaddleOCR/OpenCV and Kokoro.
 
@@ -143,12 +143,12 @@ Vite defaults to `http://localhost:5173` and proxies `/api`, `/media`, and `/hea
 
 - The mobile UI captures a JPEG from the visible camera crop and submits it to `POST /api/read/jobs` with `lang_hint=bilingual` and `compiler_mode=gemma_vision` by default.
 - `POST /api/read/jobs` accepts either `image` or `text`, never both, and returns `202` with a `request_id`.
-- Image jobs run through the OpenRead story compiler before TTS. `gemma_vision` sends the image directly to Gemma; `ocr_assisted` runs PaddleOCR first and sends OCR blocks plus the image to Gemma.
+- Image jobs run through the OpenRead story compiler before TTS. `gemma_vision` sends the image directly to Gemma; `ocr_assisted` runs PaddleOCR first and sends OCR blocks plus the image to Gemma. Cerebras is the default inference provider; set `STORY_COMPILER_PROVIDER=google_genai` to switch page reads back to Google GenAI.
 - The UI polls `GET /api/read/jobs/{request_id}` every 1.5 seconds. Job statuses are `queued`, `processing`, `completed`, and `failed`; stages are `queued`, `story_compile`, `ocr`, `tts`, `completed`, and `failed`.
 - Read and Word Explorer job status payloads include millisecond `timings` for normalization, queue wait, Gemma processing, TTS, media storage, and total request time.
 - Completed jobs return the compiled `spoken_script` as `text`, the structured `story` payload, and `/media/audio/{request_id}`. Audio is WAV at 24 kHz and expires according to `MEDIA_TTL_SECONDS`.
 - `POST /api/word/jobs` accepts an uploaded `image` plus optional `lang_hint` and returns `202` with a `request_id`.
-- Word jobs crop the normalized image around the camera target, then use the faster `WORD_EXPLORER_MODEL` to identify the centered printed word, explain it for a child, and return a structured `word` payload. The UI polls `GET /api/word/jobs/{request_id}`; stages are `queued`, `word_detect`, `tts`, `completed`, and `failed`.
+- Word jobs crop the normalized image around the camera target, then use the configured Gemma Word Explorer provider to identify the centered printed word, explain it for a child, and return a structured `word` payload. Cerebras is the default; set `WORD_EXPLORER_PROVIDER=google_genai` to switch Word Explorer back to Google GenAI.
 - Completed word jobs return the `spoken_script` as `text`, the structured `word` payload, and `/media/audio/{request_id}`.
 - `POST /api/read` is still available for synchronous API use. It supports JSON metadata responses by default and `response_mode=stream` for direct WAV streaming.
 - `/api/ocr` remains a diagnostics endpoint. OCR language hinting maps `en` to PaddleOCR English; all other hints, including `bilingual` and `zh`, use PaddleOCR Chinese.
@@ -176,8 +176,8 @@ Important environment variables from `.env.example`:
 - `MAX_UPLOAD_BYTES` and `IMAGE_MAX_SIDE` bound uploaded camera frames before OCR.
 - `MAX_TEXT_CHARS` bounds direct text input and OCR output sent to TTS.
 - `MAX_ACTIVE_READS` controls async read-job worker count and synchronous `/api/read` concurrency.
-- `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, `STORY_COMPILER_TIMEOUT_SECONDS`, `STORY_COMPILER_MAX_OUTPUT_TOKENS`, and `STORY_COMPILER_TEMPERATURE` control the Gemma story compiler. The output-token cap helps prevent runaway malformed JSON responses from masking user-visible timeouts.
-- `WORD_EXPLORER_MODEL` selects the latency-focused Word Explorer model; it defaults to `gemma-4-26b-a4b-it` while page compilation remains on `GEMMA_MODEL`.
+- `CEREBRAS_API_KEY`, `CEREBRAS_GEMMA_MODEL`, `STORY_COMPILER_PROVIDER`, `GEMINI_API_KEY`, `GEMMA_MODEL`, `STORY_COMPILER_MODE`, `STORY_COMPILER_TIMEOUT_SECONDS`, `STORY_COMPILER_MAX_OUTPUT_TOKENS`, and `STORY_COMPILER_TEMPERATURE` control the Gemma story compiler. The output-token cap helps prevent runaway malformed JSON responses from masking user-visible timeouts.
+- `WORD_EXPLORER_PROVIDER`, `CEREBRAS_WORD_EXPLORER_MODEL`, and `WORD_EXPLORER_MODEL` control Word Explorer. Cerebras defaults to `gemma-4-31b`; Google fallback defaults to `gemma-4-26b-a4b-it`.
 - `WORD_EXPLORER_CROP_FRACTION` controls the centered fraction retained for Word Explorer. The default `0.62` keeps nearby context while reducing image tokens.
 - `OPENREAD_LOG_GEMMA_FAILURES`, `OPENREAD_LOG_GEMMA_SUCCESSES`, and `OPENREAD_GEMMA_LOG_TTL_SECONDS` control temporary raw Gemma-output diagnostics. By default, success and failure diagnostics are enabled and retained for 7 days.
 - `PRELOAD_MODELS=1` enables startup preloading. `PRELOAD_TTS=1` warms Kokoro by default; `PRELOAD_OCR=0` leaves PaddleOCR lazy-loaded because OCR is only used for diagnostics and `ocr_assisted`.
@@ -242,7 +242,8 @@ OpenRead is released under the Apache License 2.0. It also depends on third-part
 Model and API services:
 
 - Google GenAI SDK: Python SDK used to call the Gemma model endpoint. Project: <https://github.com/googleapis/python-genai>. License: Apache 2.0.
-- Gemma 4: multimodal model used as OpenRead's story compiler through the Google GenAI API. Project information: <https://deepmind.google/models/gemma/gemma-4/>. Model/API use is governed by Google's applicable model and API terms, separate from this repository's Apache 2.0 license.
+- Cerebras Inference: default hosted inference provider for Gemma 4 image compilation through Chat Completions. Service documentation: <https://inference-docs.cerebras.ai/>.
+- Gemma 4: multimodal model used as OpenRead's story compiler and Word Explorer model through hosted inference APIs. Project information: <https://deepmind.google/models/gemma/gemma-4/>. Model/API use is governed by the applicable model and API provider terms, separate from this repository's Apache 2.0 license.
 - Kokoro-82M: text-to-speech model used by the Kokoro package for generated read-aloud audio. Model page: <https://huggingface.co/hexgrad/Kokoro-82M>. License listed by upstream: Apache 2.0.
 
 Backend runtime:
@@ -333,6 +334,12 @@ MAX_ACTIVE_READS=1
 MAX_TEXT_CHARS=10000
 GEMINI_API_KEY=your-google-genai-key
 GEMMA_MODEL=gemma-4-31b-it
+CEREBRAS_API_KEY=your-cerebras-key
+CEREBRAS_BASE_URL=https://api.cerebras.ai/v1
+CEREBRAS_GEMMA_MODEL=gemma-4-31b
+CEREBRAS_WORD_EXPLORER_MODEL=gemma-4-31b
+STORY_COMPILER_PROVIDER=cerebras
+WORD_EXPLORER_PROVIDER=cerebras
 WORD_EXPLORER_MODEL=gemma-4-26b-a4b-it
 WORD_EXPLORER_CROP_FRACTION=0.62
 STORY_COMPILER_MODE=gemma_vision

@@ -25,7 +25,7 @@ OpenRead uses a small, inspectable web architecture:
 
 - Frontend: Vue + Vite mobile web app.
 - Backend: FastAPI service.
-- Vision/story compiler: Gemma 4 through the Google GenAI SDK.
+- Vision/story compiler: Gemma 4 through Cerebras Chat Completions by default, with Google GenAI preserved as a fallback provider.
 - Diagnostic OCR: PaddleOCR, retained for `/api/ocr` and `ocr_assisted` comparison mode.
 - Speech synthesis: Kokoro TTS, served as WAV audio.
 - Job orchestration: in-memory FastAPI job manager for hackathon demo simplicity.
@@ -76,11 +76,11 @@ This staging matters for mobile UX. The app can show "understanding page" while 
 
 OpenRead's Gemma integration lives in `backend/app/services/story_compiler.py`.
 
-The active service is `GemmaStoryCompilerService`. It receives a normalized PIL image, compiler mode, language hint, and optional OCR page. It then:
+The active service is `CerebrasStoryCompilerService` by default, or `GemmaStoryCompilerService` when `STORY_COMPILER_PROVIDER=google_genai`. It receives a normalized PIL image, compiler mode, language hint, and optional OCR page. It then:
 
 1. Converts the page image to JPEG bytes.
 2. Builds a children's picture-book reader prompt.
-3. Calls the Google GenAI SDK with image bytes plus prompt.
+3. Calls the selected Gemma provider with image bytes plus prompt. `cerebras` is the default low-latency path; `google_genai` remains an environment-driven fallback.
 4. Requests JSON output matching the Pydantic `StoryCompilation` schema.
 5. Validates the returned JSON with Pydantic.
 6. Retries once with the validation error if the model response fails schema or business validation.
@@ -106,6 +106,10 @@ The default model is configured through:
 
 ```env
 GEMMA_MODEL=gemma-4-31b-it
+CEREBRAS_GEMMA_MODEL=gemma-4-31b
+CEREBRAS_WORD_EXPLORER_MODEL=gemma-4-31b
+STORY_COMPILER_PROVIDER=cerebras
+WORD_EXPLORER_PROVIDER=cerebras
 WORD_EXPLORER_MODEL=gemma-4-26b-a4b-it
 WORD_EXPLORER_CROP_FRACTION=0.62
 STORY_COMPILER_MODE=gemma_vision

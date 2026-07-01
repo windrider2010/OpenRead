@@ -4,13 +4,16 @@ import io
 import json
 import logging
 import re
+from base64 import b64encode
+from copy import deepcopy
 from time import perf_counter
 from typing import Any, Protocol
 
+import httpx
 from PIL import Image
 from pydantic import ValidationError
 
-from app.models import CompilerMode, StoryCompilation
+from app.models import CompilerMode, CompilerProvider, StoryCompilation
 from app.services.ocr_service import RecognizedPage
 
 logger = logging.getLogger(__name__)
@@ -45,14 +48,17 @@ class GemmaStoryCompilerService:
         *,
         api_key: str | None,
         model: str,
+        provider: CompilerProvider = "google_genai",
         max_output_tokens: int = 4096,
         temperature: float = 0.1,
         diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._provider = provider
         self._max_output_tokens = max(256, max_output_tokens)
         self._temperature = temperature
+        self._missing_api_key_message = "GEMINI_API_KEY is required for OpenRead story compilation."
         self._diagnostics_recorder = diagnostics_recorder
 
     def compile_page(
@@ -66,7 +72,7 @@ class GemmaStoryCompilerService:
         client_ip: str | None = None,
     ) -> StoryCompilation:
         if not self._api_key:
-            raise StoryCompilerError("GEMINI_API_KEY is required for OpenRead story compilation.")
+            raise StoryCompilerError(self._missing_api_key_message)
 
         service_started = perf_counter()
         image_encode_started = perf_counter()
@@ -199,6 +205,7 @@ class GemmaStoryCompilerService:
         payload: dict[str, Any] = {
             "request_id": request_id,
             "client_ip": client_ip,
+            "compiler_provider": self._provider,
             "model": self._model,
             "compiler_mode": mode,
             "lang_hint": lang_hint,
@@ -245,6 +252,86 @@ class GemmaStoryCompilerService:
         return text
 
 
+class CerebrasStoryCompilerService(GemmaStoryCompilerService):
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        model: str = "gemma-4-31b",
+        base_url: str = "https://api.cerebras.ai/v1",
+        max_output_tokens: int = 4096,
+        temperature: float = 0.1,
+        timeout_seconds: int = 90,
+        diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            provider="cerebras",
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            diagnostics_recorder=diagnostics_recorder,
+        )
+        self._base_url = base_url.rstrip("/")
+        self._timeout_seconds = max(1, timeout_seconds)
+        self._missing_api_key_message = "CEREBRAS_API_KEY is required for OpenRead fast story compilation."
+
+    def _generate(self, *, image_bytes: bytes, prompt: str) -> str:
+        if not self._api_key:
+            raise StoryCompilerError("CEREBRAS_API_KEY is required for OpenRead fast story compilation.")
+
+        image_data_url = f"data:image/jpeg;base64,{b64encode(image_bytes).decode('ascii')}"
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                }
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "openread_story_compilation",
+                    "strict": True,
+                    "schema": _strict_json_schema(StoryCompilation.model_json_schema()),
+                },
+            },
+            "max_tokens": self._max_output_tokens,
+            "temperature": self._temperature,
+            "reasoning_effort": "none",
+            "stream": False,
+        }
+        try:
+            response = httpx.post(
+                f"{self._base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=httpx.Timeout(self._timeout_seconds),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500]
+            raise StoryCompilerError(f"Cerebras story compilation failed ({exc.response.status_code}): {detail}") from exc
+        except httpx.HTTPError as exc:
+            raise StoryCompilerError(f"Cerebras story compilation failed: {exc}") from exc
+
+        data = response.json()
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise StoryCompilerError("Cerebras returned an unexpected story response.") from exc
+        if not isinstance(text, str) or not text.strip():
+            raise StoryCompilerError("Cerebras returned an empty story response.")
+        return text
+
+
 def _elapsed_ms(started: float) -> float:
     return round((perf_counter() - started) * 1000, 3)
 
@@ -254,6 +341,15 @@ def normalize_compiler_mode(raw_mode: str | None, default_mode: str) -> Compiler
     if mode in {"gemma_vision", "ocr_assisted"}:
         return mode  # type: ignore[return-value]
     raise ValueError("compiler_mode must be either `gemma_vision` or `ocr_assisted`.")
+
+
+def normalize_compiler_provider(raw_provider: str | None, default_provider: str) -> CompilerProvider:
+    provider = (raw_provider or default_provider or "google_genai").strip().lower()
+    if provider in {"google_genai", "google", "reliable"}:
+        return "google_genai"
+    if provider in {"cerebras", "fast"}:
+        return "cerebras"
+    raise ValueError("compiler_provider must be either `google_genai` or `cerebras`.")
 
 
 def story_from_text(text: str, *, mode: CompilerMode = "gemma_vision") -> StoryCompilation:
@@ -455,6 +551,26 @@ def _image_to_jpeg_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=92)
     return buffer.getvalue()
+
+
+def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    strict_schema = deepcopy(schema)
+    _make_schema_strict(strict_schema)
+    return strict_schema
+
+
+def _make_schema_strict(node: Any) -> None:
+    if isinstance(node, dict):
+        if node.get("type") == "object" or "properties" in node:
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["required"] = list(properties.keys())
+            node["additionalProperties"] = False
+        for value in node.values():
+            _make_schema_strict(value)
+    elif isinstance(node, list):
+        for item in node:
+            _make_schema_strict(item)
 
 
 def _build_prompt(*, mode: CompilerMode, lang_hint: str | None, ocr_page: RecognizedPage | None) -> str:

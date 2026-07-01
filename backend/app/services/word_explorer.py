@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+from base64 import b64encode
 from time import perf_counter
 from typing import Any, Protocol
 
+import httpx
 from PIL import Image
 from pydantic import ValidationError
 
+from app.models import CompilerProvider
 from app.models import WordExplorerResult
 from app.services.story_compiler import (
     StoryCompilerError,
@@ -14,6 +17,7 @@ from app.services.story_compiler import (
     _image_to_jpeg_bytes,
     _json_candidates,
     _repair_json_text,
+    _strict_json_schema,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,10 +50,13 @@ class GemmaWordExplorerService:
         *,
         api_key: str | None,
         model: str,
+        provider: CompilerProvider = "google_genai",
         diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._provider = provider
+        self._missing_api_key_message = "GEMINI_API_KEY is required for OpenRead word exploration."
         self._diagnostics_recorder = diagnostics_recorder
 
     def explore_word(
@@ -61,7 +68,7 @@ class GemmaWordExplorerService:
         client_ip: str | None = None,
     ) -> WordExplorerResult:
         if not self._api_key:
-            raise WordExplorerError("GEMINI_API_KEY is required for OpenRead word exploration.")
+            raise WordExplorerError(self._missing_api_key_message)
 
         service_started = perf_counter()
         image_encode_started = perf_counter()
@@ -194,6 +201,7 @@ class GemmaWordExplorerService:
             "request_id": request_id,
             "client_ip": client_ip,
             "task": "word_explorer",
+            "compiler_provider": self._provider,
             "model": self._model,
             "compiler_mode": "gemma_vision",
             "lang_hint": lang_hint,
@@ -235,6 +243,79 @@ class GemmaWordExplorerService:
         text = getattr(response, "text", None)
         if not isinstance(text, str) or not text.strip():
             raise WordExplorerError("Gemma returned an empty word explanation response.")
+        return text
+
+
+class CerebrasWordExplorerService(GemmaWordExplorerService):
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        model: str = "gemma-4-31b",
+        base_url: str = "https://api.cerebras.ai/v1",
+        timeout_seconds: int = 90,
+        diagnostics_recorder: GemmaDiagnosticsRecorder | None = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            provider="cerebras",
+            diagnostics_recorder=diagnostics_recorder,
+        )
+        self._base_url = base_url.rstrip("/")
+        self._timeout_seconds = max(1, timeout_seconds)
+        self._missing_api_key_message = "CEREBRAS_API_KEY is required for OpenRead fast word exploration."
+
+    def _generate(self, *, image_bytes: bytes, prompt: str) -> str:
+        image_data_url = f"data:image/jpeg;base64,{b64encode(image_bytes).decode('ascii')}"
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                }
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "openread_word_explorer",
+                    "strict": True,
+                    "schema": _strict_json_schema(WordExplorerResult.model_json_schema()),
+                },
+            },
+            "max_tokens": 2048,
+            "temperature": 0.1,
+            "reasoning_effort": "none",
+            "stream": False,
+        }
+        try:
+            response = httpx.post(
+                f"{self._base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=httpx.Timeout(self._timeout_seconds),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500]
+            raise WordExplorerError(f"Cerebras word exploration failed ({exc.response.status_code}): {detail}") from exc
+        except httpx.HTTPError as exc:
+            raise WordExplorerError(f"Cerebras word exploration failed: {exc}") from exc
+
+        data = response.json()
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise WordExplorerError("Cerebras returned an unexpected word explanation response.") from exc
+        if not isinstance(text, str) or not text.strip():
+            raise WordExplorerError("Cerebras returned an empty word explanation response.")
         return text
 
 

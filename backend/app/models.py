@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 CompilerMode = Literal["gemma_vision", "ocr_assisted"]
+CompilerProvider = Literal["google_genai", "cerebras"]
 ReadJobStage = Literal["queued", "story_compile", "ocr", "tts", "completed", "failed"]
 WordJobStage = Literal["queued", "word_detect", "tts", "completed", "failed"]
 

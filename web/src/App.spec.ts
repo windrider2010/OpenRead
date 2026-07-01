@@ -220,7 +220,12 @@ describe('App', () => {
     expect(wrapper.get('[data-testid="main-action"]').text()).toContain('Take Photo')
 
     await capturePage(wrapper)
-    expect(submitReadRequest).toHaveBeenCalledWith(expect.any(Blob), 'bilingual', 'gemma_vision', expect.any(Function))
+    expect(submitReadRequest).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'bilingual',
+      'gemma_vision',
+      expect.any(Function),
+    )
     expect(submitWordRequest).not.toHaveBeenCalled()
   })
 

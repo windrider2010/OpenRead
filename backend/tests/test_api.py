@@ -10,7 +10,7 @@ from PIL import Image
 
 from app.config import Settings
 from app.main import create_app
-from app.models import CompilerMode, StoryCompilation, WordExplorerResult
+from app.models import CompilerMode, CompilerProvider, StoryCompilation, WordExplorerResult
 from app.services.media_store import MediaStore
 from app.services.ocr_service import RecognizedBlock, RecognizedPage
 from app.services.tts_service import SynthesizedAudio
@@ -76,7 +76,8 @@ class BlockingTtsService(FakeTtsService):
 
 
 class FakeStoryCompilerService:
-    def __init__(self) -> None:
+    def __init__(self, *, provider: CompilerProvider = "google_genai") -> None:
+        self.provider = provider
         self.calls: list[CompilerMode] = []
         self.ocr_pages: list[RecognizedPage | None] = []
         self.request_ids: list[str | None] = []
@@ -411,6 +412,97 @@ def test_read_job_endpoint_ocr_assisted_mode_invokes_ocr_before_compiler(tmp_pat
     assert compiler.calls == ["ocr_assisted"]
     assert compiler.ocr_pages[0] is not None
     assert completed["story"]["diagnostics"]["ocr_used"] is True
+
+
+def test_read_job_endpoint_defaults_to_cerebras_provider(tmp_path: Path) -> None:
+    google_compiler = FakeStoryCompilerService(provider="google_genai")
+    cerebras_compiler = FakeStoryCompilerService(provider="cerebras")
+    app = create_app(
+        ocr_service=FakeOcrService(),
+        story_compiler_service=google_compiler,
+        cerebras_story_compiler_service=cerebras_compiler,
+        word_explorer_service=FakeWordExplorerService(),
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/read/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        )
+        assert start_response.status_code == 202
+        completed = _wait_for_job_completion(client, start_response.json()["request_id"])
+
+    assert completed["status"] == "completed"
+    assert google_compiler.calls == []
+    assert cerebras_compiler.calls == ["gemma_vision"]
+
+
+def test_read_job_endpoint_google_provider_can_be_selected_by_env(tmp_path: Path) -> None:
+    google_compiler = FakeStoryCompilerService(provider="google_genai")
+    cerebras_compiler = FakeStoryCompilerService(provider="cerebras")
+    settings = Settings(story_compiler_provider="google_genai")
+    app = create_app(
+        settings=settings,
+        ocr_service=FakeOcrService(),
+        story_compiler_service=google_compiler,
+        cerebras_story_compiler_service=cerebras_compiler,
+        word_explorer_service=FakeWordExplorerService(),
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/read/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        )
+        assert start_response.status_code == 202
+        completed = _wait_for_job_completion(client, start_response.json()["request_id"])
+
+    assert completed["status"] == "completed"
+    assert google_compiler.calls == ["gemma_vision"]
+    assert cerebras_compiler.calls == []
+
+
+def test_read_job_endpoint_request_can_override_compiler_provider(tmp_path: Path) -> None:
+    google_compiler = FakeStoryCompilerService(provider="google_genai")
+    cerebras_compiler = FakeStoryCompilerService(provider="cerebras")
+    settings = Settings(story_compiler_provider="google_genai")
+    app = create_app(
+        settings=settings,
+        ocr_service=FakeOcrService(),
+        story_compiler_service=google_compiler,
+        cerebras_story_compiler_service=cerebras_compiler,
+        word_explorer_service=FakeWordExplorerService(),
+        tts_service=FakeTtsService(),
+        media_store=MediaStore(tmp_path / "media", ttl_seconds=3600),
+    )
+
+    with TestClient(app) as client:
+        start_response = client.post(
+            "/api/read/jobs",
+            files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+            data={"compiler_provider": "cerebras"},
+        )
+        assert start_response.status_code == 202
+        completed = _wait_for_job_completion(client, start_response.json()["request_id"])
+
+    assert completed["status"] == "completed"
+    assert google_compiler.calls == []
+    assert cerebras_compiler.calls == ["gemma_vision"]
+
+
+def test_read_endpoint_rejects_invalid_compiler_provider(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    response = client.post(
+        "/api/read",
+        files={"image": ("page.jpg", _sample_image_bytes(), "image/jpeg")},
+        data={"compiler_provider": "bad-provider"},
+    )
+    assert response.status_code == 422
+    assert "compiler_provider" in response.json()["detail"]
 
 
 def test_read_job_endpoint_rejects_empty_input(tmp_path: Path) -> None:

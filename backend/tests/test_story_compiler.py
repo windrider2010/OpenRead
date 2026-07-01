@@ -9,7 +9,13 @@ from PIL import Image
 
 from app.models import StoryCompilation
 from app.services.gemma_diagnostics import GemmaDiagnosticsStore
-from app.services.story_compiler import GemmaStoryCompilerService, StoryCompilerError, normalize_compiler_mode
+from app.services.story_compiler import (
+    CerebrasStoryCompilerService,
+    GemmaStoryCompilerService,
+    StoryCompilerError,
+    normalize_compiler_mode,
+    normalize_compiler_provider,
+)
 
 
 class FakeGemmaCompiler(GemmaStoryCompilerService):
@@ -348,8 +354,75 @@ def test_gemma_story_compiler_uses_current_genai_structured_output_config(monkey
     assert "response_format" not in config_kwargs
 
 
+def test_cerebras_story_compiler_uses_chat_completions_with_strict_schema(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": _story_json()}}]}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.story_compiler.httpx.post", fake_post)
+
+    compiler = CerebrasStoryCompilerService(
+        api_key="cerebras-key",
+        model="gemma-4-31b",
+        base_url="https://api.cerebras.ai/v1",
+        max_output_tokens=2048,
+        temperature=0.0,
+        timeout_seconds=12,
+    )
+    story = compiler.compile_page(image=Image.new("RGB", (20, 20), color="white"), mode="gemma_vision")
+
+    assert story.spoken_script == "Hello world."
+    assert captured["url"] == "https://api.cerebras.ai/v1/chat/completions"
+    payload = captured["json"]
+    assert payload["model"] == "gemma-4-31b"
+    assert payload["max_tokens"] == 2048
+    assert payload["temperature"] == 0.0
+    assert payload["reasoning_effort"] == "none"
+    assert payload["response_format"]["type"] == "json_schema"
+    json_schema = payload["response_format"]["json_schema"]
+    assert json_schema["strict"] is True
+    assert json_schema["schema"]["additionalProperties"] is False
+    assert "title" in json_schema["schema"]["required"]
+    content = payload["messages"][0]["content"]
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert captured["headers"]["Authorization"] == "Bearer cerebras-key"
+
+
+def test_cerebras_story_compiler_requires_cerebras_api_key() -> None:
+    compiler = CerebrasStoryCompilerService(api_key=None)
+
+    with pytest.raises(StoryCompilerError, match="CEREBRAS_API_KEY"):
+        compiler.compile_page(
+            image=Image.new("RGB", (20, 20), color="white"),
+            mode="gemma_vision",
+        )
+
+
 def test_normalize_compiler_mode_accepts_supported_modes() -> None:
     assert normalize_compiler_mode(None, "gemma_vision") == "gemma_vision"
     assert normalize_compiler_mode("ocr_assisted", "gemma_vision") == "ocr_assisted"
     with pytest.raises(ValueError):
         normalize_compiler_mode("ocr", "gemma_vision")
+
+
+def test_normalize_compiler_provider_accepts_product_aliases() -> None:
+    assert normalize_compiler_provider(None, "google_genai") == "google_genai"
+    assert normalize_compiler_provider("reliable", "google_genai") == "google_genai"
+    assert normalize_compiler_provider("fast", "google_genai") == "cerebras"
+    assert normalize_compiler_provider("cerebras", "google_genai") == "cerebras"
+    with pytest.raises(ValueError):
+        normalize_compiler_provider("other", "google_genai")

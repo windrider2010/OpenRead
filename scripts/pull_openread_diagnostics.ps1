@@ -123,6 +123,7 @@ $rows = foreach ($record in $rawPayload.records) {
         client_ip = Get-JsonProperty $payload "client_ip"
         status = Get-JsonProperty $payload "status"
         fallback_used = Get-JsonProperty $payload "fallback_used"
+        compiler_provider = Get-JsonProperty $payload "compiler_provider"
         model = Get-JsonProperty $payload "model"
         compiler_mode = Get-JsonProperty $payload "compiler_mode"
         lang_hint = Get-JsonProperty $payload "lang_hint"

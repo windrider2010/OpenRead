@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.models import WordExplorerResult
 from app.services.gemma_diagnostics import GemmaDiagnosticsStore
-from app.services.word_explorer import GemmaWordExplorerService, WordExplorerError
+from app.services.word_explorer import CerebrasWordExplorerService, GemmaWordExplorerService, WordExplorerError
 
 
 class FakeGemmaWordExplorer(GemmaWordExplorerService):
@@ -164,6 +164,59 @@ def test_gemma_word_explorer_requires_api_key() -> None:
 
     with pytest.raises(WordExplorerError, match="GEMINI_API_KEY"):
         explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
+
+
+def test_cerebras_word_explorer_requires_cerebras_api_key() -> None:
+    explorer = CerebrasWordExplorerService(api_key=None)
+
+    with pytest.raises(WordExplorerError, match="CEREBRAS_API_KEY"):
+        explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
+
+
+def test_cerebras_word_explorer_uses_chat_completions_with_strict_schema(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": _word_json()}}]}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.word_explorer.httpx.post", fake_post)
+
+    explorer = CerebrasWordExplorerService(
+        api_key="cerebras-key",
+        model="gemma-4-31b",
+        base_url="https://api.cerebras.ai/v1",
+        timeout_seconds=12,
+    )
+    result = explorer.explore_word(image=Image.new("RGB", (20, 20), color="white"))
+
+    assert result.selected_word == "brave"
+    assert captured["url"] == "https://api.cerebras.ai/v1/chat/completions"
+    payload = captured["json"]
+    assert payload["model"] == "gemma-4-31b"
+    assert payload["max_tokens"] == 2048
+    assert payload["temperature"] == 0.1
+    assert payload["reasoning_effort"] == "none"
+    assert payload["response_format"]["type"] == "json_schema"
+    json_schema = payload["response_format"]["json_schema"]
+    assert json_schema["strict"] is True
+    assert json_schema["schema"]["additionalProperties"] is False
+    assert "selected_word" in json_schema["schema"]["required"]
+    content = payload["messages"][0]["content"]
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert captured["headers"]["Authorization"] == "Bearer cerebras-key"
 
 
 def test_gemma_word_explorer_uses_current_genai_structured_output_config(monkeypatch) -> None:
